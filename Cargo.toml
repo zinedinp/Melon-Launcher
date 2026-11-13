@@ -1,0 +1,27 @@
+[package]
+name = "melon-launcher"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Melon launcher, versioned independently of the game client"
+
+repository = "https://github.com/zinedinp/Melon"
+license = "GPL-3.0"
+
+[[bin]]
+name = "melon-launcher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+melon = { path = "../../Melon" }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+pumpkin-mod = { path = "../../Pumpkin/Pumpkin/crates/pumpkin-mod" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+winit = "0.30.13"
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
+open = "5.4.5"
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "json"] }
+uuid = { version = "1.29.2", features = ["v3", "v4", "v5"] }
