@@ -14,9 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-melon = { path = "../../Melon" }
+melon = { git = "https://github.com/zinedinp/Melon-Client", branch = "main" }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-pumpkin-mod = { path = "../../Pumpkin/Pumpkin/crates/pumpkin-mod" }
+pumpkin-mod = { git = "https://github.com/zinedinp/pumpkin-mod", branch = "main" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"

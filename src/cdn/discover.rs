@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const BAKED: &str = include_str!("../../../../Melon/discover.json");
+const BAKED: &str = include_str!("../../discover.json");
 const CACHE: &str = "discover.json";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
