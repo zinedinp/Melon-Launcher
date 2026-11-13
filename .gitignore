@@ -1,1 +1,11 @@
 /target
+/account.json
+/accounts.json
+/launcher.json
+/instances.json
+/instances/
+/assets/
+/cache/
+/logs/
+/downloads/
+/client_id.txt

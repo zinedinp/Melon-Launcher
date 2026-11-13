@@ -2612,6 +2612,7 @@ checksum = "7ebb8d8732c6a6df3d8f032a82911cfc747e00efb95cc46e8d0acd5b5b88570c"
 [[package]]
 name = "melon"
 version = "0.7.8+mc26.3"
+source = "git+https://github.com/zinedinp/Melon-Client?branch=main#3fd987b5c62d78aac36f3a3bc0cfa8c724c0dc8c"
 dependencies = [
  "aes 0.9.4",
  "anyhow",
@@ -2630,7 +2631,7 @@ dependencies = [
  "pumpkin-config",
  "pumpkin-core",
  "pumpkin-data",
- "pumpkin-mod",
+ "pumpkin-mod 0.2.2+26.3-26.60 (git+https://github.com/zinedinp/pumpkin-mod?branch=main)",
  "pumpkin-nbt",
  "pumpkin-protocol",
  "pumpkin-util",
@@ -2662,7 +2663,7 @@ dependencies = [
  "image",
  "melon",
  "open",
- "pumpkin-mod",
+ "pumpkin-mod 0.2.2+26.3-26.60 (git+https://github.com/zinedinp/pumpkin-mod?branch=main)",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3876,7 +3877,7 @@ dependencies = [
  "pumpkin-gametest",
  "pumpkin-inventory",
  "pumpkin-macros",
- "pumpkin-mod",
+ "pumpkin-mod 0.2.2+26.3-26.60 (git+https://github.com/zinedinp/Pumpkin?branch=mod-zip)",
  "pumpkin-nbt",
  "pumpkin-protocol",
  "pumpkin-util",
@@ -3965,6 +3966,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "pumpkin-mod"
+version = "0.2.2+26.3-26.60"
+source = "git+https://github.com/zinedinp/pumpkin-mod?branch=main#0b120d154812787abe429eb7d4837530f32e1bc8"
+dependencies = [
+ "flate2",
+ "hex",
+ "libloading 0.9.1",
+ "pumpkin-data",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "zip",
 ]
 
 [[package]]
