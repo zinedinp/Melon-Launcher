@@ -12,7 +12,7 @@ pub const ORIGIN: &str = "https://elbengeist.moe/melonmc/cdn";
 const UA: &str = concat!(
     "Melon/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/zinedinp/Melon)"
+    " (https://github.com/zinedinp/Melon-Launcher)"
 );
 const GET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
