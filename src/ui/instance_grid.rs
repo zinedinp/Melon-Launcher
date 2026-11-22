@@ -7,7 +7,7 @@ use super::shell::{Action, Purpose, Shell, Status};
 use super::textures;
 use crate::play::PlayState;
 use crate::store::instances::Instance;
-use melon::gui::widgets::Rect;
+use super::kit::Rect;
 
 const TILE_W: f32 = 74.0;
 const TILE_H: f32 = 56.0;

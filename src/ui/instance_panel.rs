@@ -10,7 +10,7 @@ use crate::catalog;
 use crate::play::PlayState;
 use crate::store::global::{self, Kind};
 use crate::store::instances::{self, Engine, Instance, LOCAL_VERSION};
-use melon::gui::widgets::Rect;
+use super::kit::Rect;
 
 const HEAD_H: f32 = 48.0;
 const SIDE_W: f32 = 178.0;
@@ -72,7 +72,7 @@ impl Shell {
         }
         cx.tooltip(icon, cx.t("panel.change_icon"));
         if cx.clicked(icon)
-            && let Some(png) = melon::platform::pick_file(cx.t("panel.change_icon"), "png")
+            && let Some(png) = melon_base::platform::pick_file(cx.t("panel.change_icon"), "png")
         {
             let set = instances::set_icon(instance, &png);
             if self.report(set).is_some() {
@@ -121,7 +121,7 @@ impl Shell {
         let text_w = right - text_x;
         cx.label(&instance.name, text_x, head.y + 11.0, text_w, theme::TEXT);
         let (engine, color) = if instance.is_java() {
-            let version = instance.java_version.as_deref().unwrap_or(melon::home::VERSION);
+            let version = instance.java_version.as_deref().unwrap_or(melon_base::home::VERSION);
             (cx.tf("panel.java_line", &[version]), theme::JAVA)
         } else {
             (cx.tf("panel.melon_line", &[&self.version_label(cx, instance)]), theme::ACCENT)
@@ -168,7 +168,7 @@ impl Shell {
             if cx.button(rect, cx.t(key), Btn::NORMAL.small()) {
                 let path = instance.path.join(folder);
                 let _ = std::fs::create_dir_all(&path);
-                melon::platform::open_dir(&path);
+                melon_base::platform::open_dir(&path);
             }
         }
         // TODO: shaderpacks: the client has no shader loader yet.
@@ -294,7 +294,7 @@ impl Shell {
         let mut iy = y + 6.0;
         cx.small(&cx.t("java.title").to_uppercase(), ix, iy, theme::JAVA);
         iy += 11.0;
-        let version = instance.java_version.as_deref().unwrap_or(melon::home::VERSION);
+        let version = instance.java_version.as_deref().unwrap_or(melon_base::home::VERSION);
         cx.label(&cx.tf("java.minecraft", &[version]), ix, iy, iw, theme::TEXT);
         iy += 12.0;
 
@@ -323,7 +323,7 @@ impl Shell {
             let path = match index {
                 0 => Some(None),
                 i if i <= runtimes.len() => Some(Some(runtimes[i - 1].path.display().to_string())),
-                _ => melon::platform::pick_file(cx.t("java.browse"), if cfg!(windows) { "exe" } else { "*" })
+                _ => melon_base::platform::pick_file(cx.t("java.browse"), if cfg!(windows) { "exe" } else { "*" })
                     .map(|p| Some(p.display().to_string())),
             };
             if let Some(path) = path {

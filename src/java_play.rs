@@ -1,11 +1,11 @@
 //! Start a Java Edition instance from a client jar and its version JSON.
 
-use melon::auth::accounts::Account;
-use melon::home;
+use melon_base::auth::accounts::Account;
+use melon_base::home;
 use crate::store::instances::Instance;
 use crate::store::java;
 use crate::store::settings::Settings;
-use melon::prepare;
+use melon_base::prepare;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -27,7 +27,7 @@ impl Player {
                 token: stored.access_token.clone(),
             },
             Some(Account::Offline { username }) => {
-                let uuid = melon::auth::accounts::offline_uuid(username).to_string();
+                let uuid = melon_base::auth::accounts::offline_uuid(username).to_string();
                 Self {
                     name: username.clone(),
                     uuid,
@@ -121,7 +121,7 @@ pub fn prepare_assets(
         found.jar.display(),
         dest.display()
     ));
-    melon::prepare::extract_jar_assets(&found.jar, &dest.join("minecraft"), &|p| {
+    melon_base::prepare::extract_jar_assets(&found.jar, &dest.join("minecraft"), &|p| {
         log(p.message);
     })?;
     fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;

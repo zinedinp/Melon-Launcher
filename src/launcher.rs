@@ -1,30 +1,25 @@
-//! The launcher's window and loop: draws the UI, runs downloads and mod builds in the
-//! background, starts the game and watches it.
+//! The launcher's window and loop: draws the UI, runs downloads in the background, starts the
+//! game and watches it.
 
 use crate::catalog;
 use crate::cdn;
 use crate::java_play;
 use crate::lang::Strings;
 use crate::play::{self, Client, Facts, Install};
+use crate::store::global;
 use crate::store::instances::{self, Instance};
 use crate::store::settings::Settings;
-use crate::store::global;
-use crate::ui::compile::CompileOverlay;
-use crate::ui::crash::{self, CrashModal, CrashReport};
 use crate::ui::heads::Heads;
-use crate::ui::kit::{Cx, Input, Popup, theme};
+use crate::ui::kit::paint::{Painter, Textures};
+use crate::ui::kit::{CursorKind, Cx, Input, Key, Popup, theme};
 use crate::ui::login::LoginFlow;
+use crate::ui::overlay::{self, Choice, CrashReport, Progress};
 use crate::ui::shell::{Action, PlayRequest, Shell, Status};
-use melon::app::input::text_events;
-use melon::assets::Assets;
-use melon::auth;
-use melon::gui::assets::GuiAssets;
-use melon::gui::screen::{CursorKind, GuiScale, TextEvent};
-use melon::gui::widgets::Ui;
-use melon::home;
-use melon::i18n::Lang;
-use melon::prepare::{self, Found};
-use melon::renderer::{Frame, Renderer, quad::DrawList};
+use melon_base::auth;
+use melon_base::gfx::quad::DrawList;
+use melon_base::gfx::{Renderer2d, ascii8};
+use melon_base::home;
+use melon_base::prepare::{self, Found};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -35,16 +30,16 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 /// The window, in logical pixels.
 const WINDOW_SIZE: (f64, f64) = (1280.0, 720.0);
 const MIN_WINDOW_SIZE: (f64, f64) = (1040.0, 600.0);
 /// GUI pixels per logical pixel.
-const GUI_SCALE: u8 = 2;
+const GUI_SCALE: f64 = 2.0;
 const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / 60);
 /// How often to check whether the game process has exited.
 const GAME_POLL: Duration = Duration::from_millis(100);
@@ -56,11 +51,9 @@ const KEPT_LINES: usize = 64;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 struct RunningState {
-    renderer: Renderer,
+    renderer: Renderer2d,
     window: Window,
-    gui_assets: GuiAssets,
-    /// The client's texts, for the popups that still use its widgets.
-    lang: Lang,
+    textures: Textures,
     strings: Strings,
     shell: Shell,
     input: Input,
@@ -68,10 +61,10 @@ struct RunningState {
     login: LoginFlow,
     heads: Heads,
     /// Shown over everything after a game that ended with an error.
-    crash: Option<CrashModal>,
-    /// Shown while mods are built or something is downloaded.
-    overlay: Option<CompileOverlay>,
-    compile_job: Option<CompileJob>,
+    crash: Option<CrashReport>,
+    /// Shown while something is downloaded or prepared.
+    progress: Option<Progress>,
+    prepare_job: Option<PrepareJob>,
     install_job: Option<InstallJob>,
     cursor: PhysicalPosition<f64>,
     last_press: Option<(Instant, (f32, f32))>,
@@ -81,8 +74,8 @@ struct RunningState {
     next_frame: Instant,
 }
 
-/// Mods being extracted and built before the game starts.
-struct CompileJob {
+/// A Java instance's assets being readied before it starts.
+struct PrepareJob {
     request: PlayRequest,
     rx: Receiver<String>,
     thread: Option<JoinHandle<Result<(), String>>>,
@@ -95,118 +88,93 @@ struct InstallJob {
 }
 
 impl RunningState {
-    fn scale(&self) -> GuiScale {
-        scale_for(&self.window)
+    /// Physical pixels per GUI pixel.
+    fn scale(&self) -> f32 {
+        (GUI_SCALE * self.window.scale_factor()).round().max(1.0) as f32
+    }
+
+    /// The window's size in GUI pixels.
+    fn size(&self) -> (f32, f32) {
+        let size = self.window.inner_size();
+        let scale = self.scale();
+        (size.width as f32 / scale, size.height as f32 / scale)
     }
 
     /// The cursor in GUI pixels.
     fn pointer(&self) -> (f32, f32) {
-        self.scale().to_virtual((self.cursor.x, self.cursor.y))
+        let scale = self.scale();
+        (self.cursor.x as f32 / scale, self.cursor.y as f32 / scale)
     }
 
     /// A popup covers the window: nothing under it reacts.
     fn modal_open(&self) -> bool {
-        self.crash.is_some() || self.overlay.is_some() || self.login.is_modal_open()
+        self.crash.is_some() || self.progress.is_some() || self.login.is_modal_open()
     }
 
     fn busy(&self) -> bool {
-        self.login.is_busy() || self.compile_job.is_some() || self.install_job.is_some()
-    }
-
-    fn update_cursor_icon(&self, shell_cursor: CursorKind) {
-        let size = self.scale().virtual_size();
-        let font = &self.gui_assets.font;
-        let pointer = |over: bool| if over { CursorIcon::Pointer } else { CursorIcon::Default };
-        let icon = if let Some(crash) = &self.crash {
-            pointer(crash.over_button(size, |t, w| font.wrap(t, w)))
-        } else if let Some(overlay) = &self.overlay {
-            pointer(overlay.over_button())
-        } else if self.login.is_modal_open() {
-            pointer(self.login.modal_button_hovered())
-        } else {
-            match shell_cursor {
-                CursorKind::Default => CursorIcon::Default,
-                CursorKind::Pointer => CursorIcon::Pointer,
-                CursorKind::Text => CursorIcon::Text,
-                CursorKind::ResizeNs => CursorIcon::NsResize,
-                CursorKind::ResizeEw => CursorIcon::EwResize,
-            }
-        };
-        self.window.set_cursor(icon);
+        self.login.is_busy() || self.prepare_job.is_some() || self.install_job.is_some()
     }
 
     fn set_language(&mut self, home: &Path) {
-        let language = self.shell.settings.language(home);
-        self.strings = Strings::new(language);
-        self.lang = Lang::launcher(language);
+        self.strings = Strings::new(self.shell.settings.language(home));
     }
 
-    /// Builds the instance's mods (or readies a Java instance's assets), then the game starts.
-    fn start_compile(&mut self, request: PlayRequest, home: &Path) {
-        if self.compile_job.is_some() || self.install_job.is_some() {
+    fn show_progress(&mut self, job: &str) {
+        let key = |part: &str| format!("job.{job}.{part}");
+        let tr = &self.strings;
+        self.progress = Some(Progress::new(
+            tr.get(&key("title")),
+            tr.get(&key("working")),
+            tr.get(&key("failed")),
+        ));
+    }
+
+    /// Readies a Java instance's assets, then the game starts.
+    fn start_prepare(&mut self, request: PlayRequest, instance: Instance, home: &Path) {
+        if self.prepare_job.is_some() || self.install_job.is_some() {
             return;
         }
-        let Some(instance) = instances::find(home, &request.instance) else {
-            return;
-        };
         let (tx, rx) = mpsc::channel();
-        let thread = if instance.is_java() {
-            let assets = self.shell.settings.assets_dir(home);
-            let home = home.to_path_buf();
-            std::thread::spawn(move || {
-                java_play::prepare_assets(&home, &instance, &assets, &|message| {
-                    let _ = tx.send(message);
-                })
+        let assets = self.shell.settings.assets_dir(home);
+        let home = home.to_path_buf();
+        let thread = std::thread::spawn(move || {
+            java_play::prepare_assets(&home, &instance, &assets, &|message| {
+                let _ = tx.send(message);
             })
-        } else {
-            instances::ensure_dirs(&instance.path);
-            std::thread::spawn(move || {
-                let opts = pumpkin_mod::PrepareOpts::for_game_dir(&instance.path);
-                pumpkin_mod::prepare(&opts, |event| {
-                    let _ = tx.send(format!("{}: {}", event.id, event.message));
-                })
-                .map(|report| pumpkin_mod::activate(&report.mods))
-                .map_err(|e| e.to_string())
-            })
-        };
-        let tr = &self.strings;
-        self.overlay = Some(CompileOverlay::titled(
-            tr.get("job.prepare.title"),
-            tr.get("job.prepare.working"),
-            tr.get("job.prepare.failed"),
-        ));
-        self.compile_job = Some(CompileJob {
+        });
+        self.show_progress("prepare");
+        self.prepare_job = Some(PrepareJob {
             request,
             rx,
             thread: Some(thread),
         });
     }
 
-    /// Drains the build's lines. `Some` when it succeeded and the game may start.
-    fn poll_compile(&mut self) -> Option<PlayRequest> {
-        let job = self.compile_job.as_mut()?;
+    /// Drains the job's lines. `Some` when it succeeded and the game may start.
+    fn poll_prepare(&mut self) -> Option<PlayRequest> {
+        let job = self.prepare_job.as_mut()?;
         while let Ok(line) = job.rx.try_recv() {
-            if let Some(overlay) = &mut self.overlay {
-                overlay.push(&line);
+            if let Some(progress) = &mut self.progress {
+                progress.push(&line);
             }
         }
         if !job.thread.as_ref().is_some_and(JoinHandle::is_finished) {
             return None;
         }
-        let mut job = self.compile_job.take()?;
+        let mut job = self.prepare_job.take()?;
         let result = job
             .thread
             .take()
             .and_then(|t| t.join().ok())
-            .unwrap_or_else(|| Err("the build thread failed".into()));
+            .unwrap_or_else(|| Err("the preparing thread failed".into()));
         match result {
             Ok(()) => {
-                self.overlay = None;
+                self.progress = None;
                 Some(job.request)
             }
             Err(error) => {
-                if let Some(overlay) = &mut self.overlay {
-                    overlay.fail(error);
+                if let Some(progress) = &mut self.progress {
+                    progress.fail(error);
                 }
                 None
             }
@@ -215,7 +183,7 @@ impl RunningState {
 
     /// Fetches the Minecraft assets and/or a game client in the background.
     fn start_install(&mut self, install: Install, found: Option<Found>, home: &Path) {
-        if self.compile_job.is_some() || self.install_job.is_some() {
+        if self.prepare_job.is_some() || self.install_job.is_some() {
             return;
         }
         if !install.assets && install.version.is_none() {
@@ -247,26 +215,22 @@ impl RunningState {
             }
             Ok(())
         });
-        let tr = &self.strings;
-        self.overlay = Some(CompileOverlay::titled(
-            tr.get("job.install.title"),
-            tr.get("job.install.working"),
-            tr.get("job.install.failed"),
-        ));
+        self.show_progress("install");
         self.install_job = Some(InstallJob {
             rx,
             thread: Some(thread),
         });
     }
 
-    /// Drains the download's lines. `Some(true)` when everything is on disk.
-    fn poll_install(&mut self) -> Option<bool> {
+    /// Drains the download's lines. `Some` when it ended; then what is on disk is looked at
+    /// again.
+    fn poll_install(&mut self) -> Option<()> {
         let job = self.install_job.as_mut()?;
-        while let Ok(progress) = job.rx.try_recv() {
-            if let Some(overlay) = &mut self.overlay {
-                match progress.bytes {
-                    Some(bytes) => overlay.set_bytes(Some(bytes)),
-                    None => overlay.push(&progress.line),
+        while let Ok(update) = job.rx.try_recv() {
+            if let Some(progress) = &mut self.progress {
+                match update.bytes {
+                    Some(bytes) => progress.set_bytes(bytes),
+                    None => progress.push(&update.line),
                 }
             }
         }
@@ -280,17 +244,15 @@ impl RunningState {
             .and_then(|t| t.join().ok())
             .unwrap_or_else(|| Err("the download thread failed".into()));
         match result {
-            Ok(()) => {
-                self.overlay = None;
-                Some(true)
-            }
+            Ok(()) => self.progress = None,
             Err(error) => {
-                if let Some(overlay) = &mut self.overlay {
-                    overlay.fail(error);
+                if let Some(progress) = &mut self.progress {
+                    progress.fail(error);
                 }
-                Some(false)
             }
         }
+        self.shell.recheck();
+        Some(())
     }
 
     /// A game ended while the window was open.
@@ -298,16 +260,9 @@ impl RunningState {
         self.shell
             .record_play(finished.account_key.as_deref(), &finished.instance, finished.secs);
         if let Some(report) = finished.crash {
-            self.crash = Some(CrashModal::new(report));
+            self.crash = Some(report);
         }
     }
-}
-
-/// The GUI scale for a window: [`GUI_SCALE`] times the display's scaling.
-fn scale_for(window: &Window) -> GuiScale {
-    let size = window.inner_size();
-    let setting = (f64::from(GUI_SCALE) * window.scale_factor()).round().clamp(1.0, 255.0) as u8;
-    GuiScale::new(setting, size.width, size.height)
 }
 
 /// A game that is running.
@@ -334,7 +289,6 @@ struct Finished {
 
 struct App {
     state: Option<RunningState>,
-    assets: Option<Assets>,
     home: PathBuf,
     validation: bool,
     client_id: Option<String>,
@@ -392,6 +346,7 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
             request.join.as_deref(),
         )?
     } else {
+        instances::ensure_dirs(&instance.path);
         let mut cmd = Command::new(melon_binary(home, &settings, &instance)?);
         cmd.arg("--game");
         cmd.args(["--instance", &instance.id]);
@@ -480,14 +435,42 @@ fn report(game: &RunningGame, status: std::process::ExitStatus) -> CrashReport {
         code: status
             .code()
             .map_or_else(|| "?".to_owned(), |c| c.to_string()),
-        lines: lines[lines.len().saturating_sub(crash::TAIL_LINES)..].to_vec(),
+        lines: lines[lines.len().saturating_sub(overlay::TAIL_LINES)..].to_vec(),
         log: game.log.clone(),
+    }
+}
+
+/// The keys a text field takes for a key press.
+fn keys_of(event: &KeyEvent, control: bool) -> Vec<Key> {
+    let named = |key| vec![key];
+    match &event.logical_key {
+        WinitKey::Named(NamedKey::Backspace) => named(Key::Backspace),
+        WinitKey::Named(NamedKey::Delete) => named(Key::Delete),
+        WinitKey::Named(NamedKey::ArrowLeft) => named(Key::Left),
+        WinitKey::Named(NamedKey::ArrowRight) => named(Key::Right),
+        WinitKey::Named(NamedKey::Home) => named(Key::Home),
+        WinitKey::Named(NamedKey::End) => named(Key::End),
+        WinitKey::Named(NamedKey::Enter) => named(Key::Enter),
+        WinitKey::Character(c) if control => match c.to_lowercase().as_str() {
+            "a" => named(Key::SelectAll),
+            "c" => named(Key::Copy),
+            "x" => named(Key::Cut),
+            "v" => named(Key::Paste(
+                melon_base::platform::clipboard_text().unwrap_or_default(),
+            )),
+            _ => Vec::new(),
+        },
+        _ => event
+            .text
+            .as_ref()
+            .map(|text| text.chars().filter(|c| !c.is_control()).map(Key::Char).collect())
+            .unwrap_or_default(),
     }
 }
 
 impl App {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
-        let window = melon::platform::create_centered_window(
+        let window = melon_base::platform::create_centered_window(
             event_loop,
             Window::default_attributes()
                 .with_title("Melon Launcher")
@@ -495,26 +478,27 @@ impl App {
                 .with_min_inner_size(LogicalSize::new(MIN_WINDOW_SIZE.0, MIN_WINDOW_SIZE.1)),
         )?;
         window.set_ime_allowed(true);
-        let mut renderer = Renderer::new(&window, self.validation)?;
-        let gui_assets = GuiAssets::launcher(&mut renderer)?;
+        let mut renderer = Renderer2d::new(&window, self.validation)?;
+        let textures = Textures {
+            white: renderer.white_texture(),
+            font: renderer.load_texture(&ascii8::atlas())?,
+        };
         let home = self.home.as_path();
         let shell = Shell::new(home);
-        let language = shell.settings.language(home);
 
         let mut state = RunningState {
             renderer,
             window,
-            gui_assets,
-            lang: Lang::launcher(language),
-            strings: Strings::new(language),
+            textures,
+            strings: Strings::new(shell.settings.language(home)),
             shell,
             input: Input::default(),
             popup: Popup::default(),
             login: LoginFlow::new(self.client_id.clone(), home.to_path_buf()),
             heads: Heads::new(home),
             crash: None,
-            overlay: None,
-            compile_job: None,
+            progress: None,
+            prepare_job: None,
             install_job: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             last_press: None,
@@ -589,6 +573,9 @@ impl App {
 
     /// Starts the game; the window closes for it unless the launcher is set to stay open.
     fn play(&mut self, event_loop: &ActiveEventLoop, request: PlayRequest) {
+        if self.game.is_some() {
+            return;
+        }
         let keep_open = Settings::load(&self.home).keep_open;
         match spawn_game(&request, self.validation, &self.home) {
             Ok(game) => {
@@ -608,18 +595,21 @@ impl App {
     }
 
     /// Does what the window asked for.
-    fn apply(&mut self, actions: Vec<Action>) {
+    fn apply(&mut self, event_loop: &ActiveEventLoop, actions: Vec<Action>) {
         let home = self.home.clone();
         for action in actions {
             let Some(state) = &mut self.state else {
                 return;
             };
             match action {
-                Action::Play(request) => {
-                    if self.game.is_none() {
-                        state.start_compile(request, &home);
+                Action::Play(request) => match instances::find(&home, &request.instance) {
+                    Some(instance) if instance.is_java() && self.game.is_none() => {
+                        state.start_prepare(request, instance, &home);
                     }
-                }
+                    // The Melon client extracts and builds its mods itself when it starts.
+                    Some(_) => self.play(event_loop, request),
+                    None => {}
+                },
                 Action::Stop => {
                     if let Some(game) = &mut self.game {
                         game.stopped = true;
@@ -636,11 +626,10 @@ impl App {
     }
 
     /// One frame: lets the window react to what happened, and draws it.
-    fn redraw(&mut self) {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let Some(state) = &mut self.state else {
             return;
         };
-        state.gui_assets.sync_font(&mut state.renderer);
         if let Some(outcome) = state.login.poll() {
             state.shell.finished(outcome);
         }
@@ -649,9 +638,9 @@ impl App {
         }
         state
             .heads
-            .update(state.shell.accounts.list(), self.assets.as_ref(), &mut state.renderer);
+            .update(state.shell.accounts.list(), &mut state.renderer);
         state.shell.textures.update(&mut state.renderer);
-        let size = state.scale().virtual_size();
+        let size = state.size();
         let modal = state.modal_open();
         let status = Status {
             busy: state.busy(),
@@ -662,42 +651,41 @@ impl App {
         };
 
         state.draw_list.clear();
-        let mut ui = Ui::new(&mut state.draw_list, &state.gui_assets, &state.lang, size);
-        let mut cx = Cx::new(&mut ui, &state.strings, &state.input, &mut state.popup);
+        let mut painter = Painter::new(&mut state.draw_list, state.textures, size);
+        let mut cx = Cx::new(&mut painter, &state.strings, &state.input, &mut state.popup);
         let actions = state.shell.frame(&mut cx, &status, modal);
+        cx.active = true;
+        state.login.frame(&mut cx);
+        let close_progress = state.progress.as_ref().is_some_and(|progress| progress.frame(&mut cx));
+        let choice = state.crash.as_ref().map_or(Choice::None, |crash| crash.frame(&mut cx));
+        cx.finish();
         let cursor = cx.cursor;
-        state.login.draw(&mut ui);
-        if let Some(overlay) = &mut state.overlay {
-            overlay.draw(&mut ui);
+
+        if close_progress {
+            state.progress = None;
         }
-        if let Some(popup) = &state.crash {
-            popup.draw(&mut ui);
+        match choice {
+            Choice::Close => state.crash = None,
+            Choice::OpenLog => {
+                if let Some(crash) = &state.crash
+                    && let Err(e) = open::that(&crash.log)
+                {
+                    eprintln!("the log could not be opened: {e}");
+                }
+            }
+            Choice::None => {}
         }
         state.input.end_frame();
-        state.update_cursor_icon(cursor);
-
-        let frame = Frame {
-            scene: None,
-            ui: &state.draw_list,
-            ui_size: size,
-            clear_color: theme::BG,
-            blur: None,
-            pictures: &[],
-        };
-        if let Err(e) = state.renderer.render(&frame) {
+        state.window.set_cursor(match cursor {
+            CursorKind::Default => CursorIcon::Default,
+            CursorKind::Pointer => CursorIcon::Pointer,
+            CursorKind::Text => CursorIcon::Text,
+        });
+        if let Err(e) = state.renderer.render(&state.draw_list, size, theme::BG) {
             eprintln!("render: {e:#}");
         }
-        if let Some((x, y, height)) = melon::gui::ime::take_cursor() {
-            let scale = state.scale();
-            let (px, py) = scale.to_physical((x, y));
-            let (_, below) = scale.to_physical((0.0, y + height));
-            state.window.set_ime_cursor_area(
-                PhysicalPosition::new(px, py),
-                winit::dpi::PhysicalSize::new(1.0, (below - py).max(1.0)),
-            );
-        }
         state.next_frame = Instant::now() + FRAME_TIME;
-        self.apply(actions);
+        self.apply(event_loop, actions);
     }
 }
 
@@ -707,22 +695,12 @@ impl ApplicationHandler for App {
         if self.catalog_rx.try_recv().is_ok() {
             self.catalog_checked = true;
         }
-        let request = self.state.as_mut().and_then(RunningState::poll_compile);
+        let request = self.state.as_mut().and_then(RunningState::poll_prepare);
         if let Some(request) = request {
             self.play(event_loop, request);
         }
-        let installed = self.state.as_mut().and_then(RunningState::poll_install);
-        if installed == Some(true) {
-            let settings = Settings::load(&self.home);
-            let assets_dir = settings.melon_play_assets(&self.home);
-            if home::is_prepared_at(&assets_dir) {
-                self.assets = Some(Assets::from_root(assets_dir));
-            }
-        }
         let Some(state) = &mut self.state else { return };
-        if installed.is_some() {
-            state.shell.recheck();
-        }
+        state.poll_install();
         if Instant::now() >= state.next_frame {
             state.next_frame = Instant::now() + FRAME_TIME;
             state.window.request_redraw();
@@ -750,57 +728,21 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor = position;
-                let (x, y) = state.pointer();
-                state.input.mouse = (x, y);
-                state.login.update_hover(x, y);
-                if let Some(crash) = &mut state.crash {
-                    crash.hover(x, y);
-                }
-                let size = state.scale().virtual_size();
-                if let Some(overlay) = &mut state.overlay {
-                    overlay.hover(x, y, size);
-                }
+                state.input.mouse = state.pointer();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                melon::gui::input_state::set_left_held(true);
                 let (x, y) = state.pointer();
-                let size = state.scale().virtual_size();
-                if let Some(popup) = &state.crash {
-                    let font = &state.gui_assets.font;
-                    match popup.click(x, y, size, |t, w| font.wrap(t, w)) {
-                        crash::Choice::Close => state.crash = None,
-                        crash::Choice::OpenLog => {
-                            if let Err(e) = open::that(popup.log()) {
-                                eprintln!("the log could not be opened: {e}");
-                            }
-                        }
-                        crash::Choice::None => {}
-                    }
-                } else if let Some(overlay) = &mut state.overlay {
-                    if overlay.click(x, y, size) {
-                        state.overlay = None;
-                    }
-                } else if state.login.is_modal_open() {
-                    let font = &state.gui_assets.font;
-                    state.login.on_modal_click(x, y, size.0, size.1, font);
-                } else {
-                    let now = Instant::now();
-                    state.input.double_click = state.last_press.is_some_and(|(at, (px, py))| {
-                        now.duration_since(at) < DOUBLE_CLICK && (px - x).abs() < 4.0 && (py - y).abs() < 4.0
-                    });
-                    state.last_press = (!state.input.double_click).then_some((now, (x, y)));
-                    state.input.click = Some((x, y));
-                }
+                let now = Instant::now();
+                state.input.double_click = state.last_press.is_some_and(|(at, (px, py))| {
+                    now.duration_since(at) < DOUBLE_CLICK && (px - x).abs() < 4.0 && (py - y).abs() < 4.0
+                });
+                state.last_press = (!state.input.double_click).then_some((now, (x, y)));
+                state.input.click = Some((x, y));
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => melon::gui::input_state::set_left_held(false),
             WindowEvent::MouseWheel { delta, .. } => {
                 let notches = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -810,42 +752,33 @@ impl ApplicationHandler for App {
                     state.input.scroll += notches;
                 }
             }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                state.modifiers = modifiers.state();
-                melon::gui::input_state::set_shift(state.modifiers.shift_key());
-            }
+            WindowEvent::ModifiersChanged(modifiers) => state.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let escape = event.logical_key == Key::Named(NamedKey::Escape);
+                let escape = event.logical_key == WinitKey::Named(NamedKey::Escape);
                 if state.crash.is_some() {
                     if escape {
                         state.crash = None;
                     }
-                } else if let Some(overlay) = &state.overlay {
-                    if escape && overlay.failed() {
-                        state.overlay = None;
+                } else if let Some(progress) = &state.progress {
+                    if escape && progress.failed() {
+                        state.progress = None;
                     }
                 } else if state.login.is_modal_open() {
+                    // The login popup closes with its own button.
                 } else if escape {
                     state.shell.cancel(&mut state.popup);
                 } else {
-                    let shift = state.modifiers.shift_key();
                     let control = state.modifiers.control_key();
-                    state.input.keys.extend(text_events(&event, shift, control));
-                }
-            }
-            WindowEvent::Ime(Ime::Preedit(text, _)) => {
-                if !state.modal_open() {
-                    state.input.keys.push(TextEvent::Preedit(text));
+                    state.input.keys.extend(keys_of(&event, control));
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 if !state.modal_open() {
-                    state.input.keys.push(TextEvent::Preedit(String::new()));
                     let typed = text.chars().filter(|c| !c.is_control());
-                    state.input.keys.extend(typed.map(TextEvent::Char));
+                    state.input.keys.extend(typed.map(Key::Char));
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }
     }
@@ -857,9 +790,6 @@ pub fn run(validation: bool) -> anyhow::Result<()> {
     if let Err(e) = std::fs::create_dir_all(&home) {
         eprintln!("Melon folder {}: {e}", home.display());
     }
-    let settings = Settings::load(&home);
-    let assets_dir = settings.melon_play_assets(&home);
-    let assets = home::is_prepared_at(&assets_dir).then(|| Assets::from_root(assets_dir));
     let client_id = auth::microsoft_client_id(&home);
 
     catalog::load(&home);
@@ -873,7 +803,6 @@ pub fn run(validation: bool) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = App {
         state: None,
-        assets,
         home,
         validation,
         client_id,

@@ -16,10 +16,10 @@ use crate::play::{self, Facts, Install, PlayState};
 use crate::store::instances::{self, Engine, Instance};
 use crate::store::settings::Settings;
 use crate::store::{global, java};
-use melon::auth::accounts::{Account, Accounts};
-use melon::gui::widgets::Rect;
-use melon::gui::widgets::edit_box::EditBox;
-use melon::prepare::Found;
+use melon_base::auth::accounts::{Account, Accounts};
+use super::kit::Rect;
+use super::kit::TextField;
+use melon_base::prepare::Found;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -97,7 +97,7 @@ pub enum Purpose {
 /// The dialog that asks for a name.
 pub struct Prompt {
     purpose: Purpose,
-    edit: EditBox,
+    edit: TextField,
     error: bool,
     /// A new instance for Java Edition.
     java: bool,
@@ -209,7 +209,7 @@ impl Shell {
         self.disk = Disk {
             installed: cdn::installed_versions(&self.home),
             local_binary: self.settings.local_binary(&self.home).is_some(),
-            assets_ready: melon::home::is_prepared_at(&self.settings.melon_play_assets(&self.home)),
+            assets_ready: melon_base::home::is_prepared_at(&self.settings.melon_play_assets(&self.home)),
             java_jar: java.is_some_and(|i| java_play::locate(&self.home, i).is_some()),
             java_runtime: java.is_some_and(|i| java::resolve(&self.settings, i).is_some()),
             last_server: selected.as_ref().and_then(|i| instances::last_server(&i.path)),
@@ -288,7 +288,7 @@ impl Shell {
     /// The game ended after `secs`.
     pub fn record_play(&mut self, account_key: Option<&str>, instance: &str, secs: u64) {
         if let Some(key) = account_key {
-            melon::auth::accounts::record_play(&self.home, key, secs);
+            melon_base::auth::accounts::record_play(&self.home, key, secs);
             self.accounts = Accounts::load(&self.home);
         }
         instances::record_play(&self.home, instance, secs);
@@ -386,6 +386,9 @@ impl Shell {
         }
         let mut out = Vec::new();
         let free = !modal && !cx.popup.is_open();
+        // What opens in this frame reacts from the next one on: the press that opened it is
+        // not its own.
+        let (page_was_open, prompt_was_open) = (self.page != Page::Main, self.prompt.is_some());
         let all = Rect::new(0.0, 0.0, cx.width(), cx.height());
         cx.fill(all, theme::BG);
 
@@ -401,7 +404,7 @@ impl Shell {
         self.instance_panel(cx, panel, status, &mut out);
 
         if self.page != Page::Main {
-            cx.active = free && self.prompt.is_none();
+            cx.active = free && page_was_open && self.prompt.is_none();
             cx.shade();
             let sheet = Rect::new(
                 24.0,
@@ -416,11 +419,10 @@ impl Shell {
             }
         }
         if self.prompt.is_some() {
-            cx.active = free;
+            cx.active = free && prompt_was_open;
             cx.shade();
             self.prompt_dialog(cx);
         }
-        cx.finish();
         out
     }
 
@@ -586,7 +588,7 @@ impl Shell {
             if let Some(url) = link
                 && cx.clicked(line)
             {
-                melon::platform::open_url(url);
+                melon_base::platform::open_url(url);
             }
         }
     }
@@ -597,9 +599,9 @@ impl Shell {
             Purpose::GroupInstance => "prompt.hint.group",
             _ => "prompt.hint.instance",
         };
-        let mut edit = EditBox::new(cx.t(hint).to_owned(), 200.0, 16.0);
+        let mut edit = TextField::new(cx.t(hint).to_owned());
         let max = match purpose {
-            Purpose::AddOffline | Purpose::RenameOffline => melon::auth::accounts::MAX_NAME_LEN,
+            Purpose::AddOffline | Purpose::RenameOffline => melon_base::auth::accounts::MAX_NAME_LEN,
             _ => instances::MAX_NAME_LEN,
         };
         edit.set_max_length(max);

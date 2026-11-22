@@ -102,7 +102,7 @@ pub fn scan(home: &Path, settings: &Settings, latest: Option<&str>) -> Vec<Item>
         }
     }
 
-    let mut played = vec![melon::home::VERSION.to_string()];
+    let mut played = vec![melon_base::home::VERSION.to_string()];
     played.extend(instances.iter().filter_map(|i| i.java_version.clone()));
     for dir in children(&settings.assets_dir(home)) {
         let version = name_of(&dir);
@@ -159,7 +159,7 @@ pub fn human_size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::store::scratch;
-    use melon::instances::Engine;
+    use crate::store::instances::Engine;
 
     #[test]
     fn only_versions_no_instance_uses_are_offered() {

@@ -1,7 +1,7 @@
 //! `launcher.json`: what the launcher remembers between runs.
 
-use melon::i18n::languages::Language;
-use melon::instances::LauncherSettings;
+use melon_base::i18n::languages::Language;
+use melon_base::home;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -47,45 +47,51 @@ pub struct Settings {
 
 impl Settings {
     pub fn load(main: &Path) -> Self {
-        melon::json_file::load(&main.join(FILE)).unwrap_or_default()
+        melon_base::json_file::load(&main.join(FILE)).unwrap_or_default()
     }
 
     pub fn save(&self, main: &Path) {
-        if let Err(e) = melon::json_file::save(&main.join(FILE), self) {
+        if let Err(e) = melon_base::json_file::save(&main.join(FILE), self) {
             eprintln!("{FILE} not saved: {e}");
         }
     }
 
-    /// The part the client knows, for its asset path rules.
-    fn client(&self) -> LauncherSettings {
-        LauncherSettings {
-            instance: self.instance.clone(),
-            validation: self.validation,
-            probe: self.probe,
-            exit_after_game: self.exit_after_game,
-            assets_dir: self.assets_dir.clone(),
-            melon_binary: self.melon_binary.clone(),
+    /// Base folder for extracted assets: the chosen one, else the personal folder, else the
+    /// folder older versions extracted into next to the launcher.
+    pub fn assets_dir(&self, main: &Path) -> PathBuf {
+        if let Some(path) = self.assets_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return PathBuf::from(path);
+        }
+        let personal = home::default_assets_dir();
+        if home::is_prepared_at(&home::version_assets(&personal, home::VERSION))
+            || home::is_prepared_at(&personal)
+            || !home::is_prepared(main)
+        {
+            personal
+        } else {
+            home::assets_root(main)
         }
     }
 
-    /// Base folder for extracted assets.
-    pub fn assets_dir(&self, home: &Path) -> PathBuf {
-        self.client().assets_dir(home)
-    }
-
     /// Where the Melon client's assets are extracted to.
-    pub fn melon_extract(&self, home: &Path) -> PathBuf {
-        self.client().melon_extract(home)
+    pub fn melon_extract(&self, main: &Path) -> PathBuf {
+        home::version_assets(&self.assets_dir(main), home::VERSION)
     }
 
-    /// The assets folder the Melon client reads.
-    pub fn melon_play_assets(&self, home: &Path) -> PathBuf {
-        self.client().melon_play_assets(home)
+    /// The assets folder the Melon client reads: the version's, or the flat one of old.
+    pub fn melon_play_assets(&self, main: &Path) -> PathBuf {
+        let versioned = self.melon_extract(main);
+        let base = self.assets_dir(main);
+        if !home::is_prepared_at(&versioned) && home::is_prepared_at(&base) {
+            base
+        } else {
+            versioned
+        }
     }
 
     pub fn set_assets_path(&mut self, home: &Path, path: &Path) {
-        let path = melon::home::assets_base_from_pick(path);
-        self.assets_dir = (path != melon::home::default_assets_dir())
+        let path = home::assets_base_from_pick(path);
+        self.assets_dir = (path != home::default_assets_dir())
             .then(|| path.display().to_string());
         self.save(home);
     }
@@ -96,7 +102,7 @@ impl Settings {
             .as_deref()
             .map(PathBuf::from)
             .filter(|path| path.is_file())
-            .or_else(|| melon::prepare::scan_binaries(home).map(|found| found.path))
+            .or_else(|| melon_base::prepare::scan_binaries(home).map(|found| found.path))
     }
 
     /// The launcher's language: the picked one, else what the game used, else English.
@@ -127,8 +133,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_client_reads_what_the_launcher_writes() {
-        let home = crate::store::scratch("settings");
+    fn launcher_json_keeps_the_fields_the_client_reads() {
+        let main = crate::store::scratch("settings");
         let settings = Settings {
             instance: Some("survival".into()),
             assets_dir: Some("D:/assets".into()),
@@ -136,13 +142,15 @@ mod tests {
             language: Some("de_de".into()),
             ..Settings::default()
         };
-        settings.save(&home);
-        let client = LauncherSettings::load(&home);
-        assert_eq!(client.instance.as_deref(), Some("survival"));
-        assert_eq!(client.assets_dir.as_deref(), Some("D:/assets"));
-        let again = Settings::load(&home);
+        settings.save(&main);
+        let text = std::fs::read_to_string(main.join(FILE)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["instance"], "survival");
+        assert_eq!(json["assets_dir"], "D:/assets");
+        assert_eq!(settings.assets_dir(&main), PathBuf::from("D:/assets"));
+        let again = Settings::load(&main);
         assert!(again.keep_open);
-        assert_eq!(again.language(&home), Language::DeDe);
-        let _ = std::fs::remove_dir_all(home);
+        assert_eq!(again.language(&main), Language::DeDe);
+        let _ = std::fs::remove_dir_all(main);
     }
 }

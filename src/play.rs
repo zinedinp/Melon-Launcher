@@ -159,7 +159,7 @@ pub fn play_state(facts: &Facts) -> PlayState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use melon::instances::Engine;
+    use crate::store::instances::Engine;
 
     fn instance(version: Option<&str>, engine: Engine) -> Instance {
         Instance {

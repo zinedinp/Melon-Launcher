@@ -8,7 +8,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub use melon::instances::Engine;
+/// What plays an instance. Spelled as the game client reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    #[default]
+    Melon,
+    Java,
+}
 
 pub const MAX_NAME_LEN: usize = 48;
 /// The id the client falls back to; the instance made on the first run uses it.
@@ -142,11 +149,11 @@ struct Store {
 
 impl Store {
     fn load(main: &Path) -> Store {
-        melon::json_file::load(&main.join(FILE)).unwrap_or_default()
+        melon_base::json_file::load(&main.join(FILE)).unwrap_or_default()
     }
 
     fn save(&self, main: &Path) {
-        if let Err(e) = melon::json_file::save(&main.join(FILE), self) {
+        if let Err(e) = melon_base::json_file::save(&main.join(FILE), self) {
             eprintln!("{FILE} not saved: {e}");
         }
     }
@@ -176,11 +183,11 @@ struct Extras {
 
 impl Extras {
     fn load(main: &Path) -> Extras {
-        melon::json_file::load(&main.join(EXTRAS_FILE)).unwrap_or_default()
+        melon_base::json_file::load(&main.join(EXTRAS_FILE)).unwrap_or_default()
     }
 
     fn save(&self, main: &Path) {
-        if let Err(e) = melon::json_file::save(&main.join(EXTRAS_FILE), self) {
+        if let Err(e) = melon_base::json_file::save(&main.join(EXTRAS_FILE), self) {
             eprintln!("{EXTRAS_FILE} not saved: {e}");
         }
     }
@@ -327,7 +334,7 @@ fn from_meta(id: &str, path: &Path, store: &Store, extras: &Extras) -> Instance 
     let meta = store.instances.get(id).cloned().unwrap_or_default();
     let extra = extras.instances.get(id).cloned().unwrap_or_default();
     let java_version = match meta.engine {
-        Engine::Java => meta.java_version.or_else(|| Some(melon::home::VERSION.into())),
+        Engine::Java => meta.java_version.or_else(|| Some(melon_base::home::VERSION.into())),
         Engine::Melon => meta.java_version,
     };
     Instance {
@@ -499,7 +506,7 @@ pub fn set_engine(main: &Path, id: &str, engine: Engine) -> std::io::Result<Inst
     edit_meta(main, id, |meta| {
         meta.engine = engine;
         if engine == Engine::Java && meta.java_version.is_none() {
-            meta.java_version = Some(melon::home::VERSION.into());
+            meta.java_version = Some(melon_base::home::VERSION.into());
         }
     })
 }
@@ -637,7 +644,7 @@ mod tests {
         assert!(create(&main, "survival", Engine::Melon).is_err());
         let java = create(&main, "Old Java", Engine::Java).unwrap();
         assert!(java.is_java());
-        assert_eq!(java.java_version.as_deref(), Some(melon::home::VERSION));
+        assert_eq!(java.java_version.as_deref(), Some(melon_base::home::VERSION));
 
         std::fs::write(a.path.join("options.txt"), "x").unwrap();
         set_group(&main, &a.id, "Friends").unwrap();
@@ -660,19 +667,18 @@ mod tests {
     }
 
     #[test]
-    fn the_client_keeps_reading_instances_json() {
+    fn instances_json_keeps_the_fields_the_client_reads() {
         let main = scratch("client-schema");
         init(&main);
-        let a = create(&main, "Shared One", Engine::Melon).unwrap();
+        let a = create(&main, "Shared One", Engine::Java).unwrap();
         set_version(&main, &a.id, Some("0.7.5+mc26.3".into())).unwrap();
-        let seen = melon::instances::find(&main, "shared-one").unwrap();
-        assert_eq!(seen.name, "Shared One");
-        assert_eq!(seen.path, a.path);
-        assert_eq!(
-            find(&main, &a.id).unwrap().version.as_deref(),
-            Some("0.7.5+mc26.3"),
-            "the client rewriting instances.json loses nothing of the launcher's"
-        );
+        let text = std::fs::read_to_string(main.join(FILE)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let entry = &json["instances"]["shared-one"];
+        assert_eq!(entry["name"], "Shared One");
+        assert_eq!(entry["engine"], "java");
+        assert_eq!(entry["java_version"], melon_base::home::VERSION);
+        assert!(entry.get("version").is_none(), "launcher-only fields stay out of it");
         let _ = std::fs::remove_dir_all(main);
     }
 

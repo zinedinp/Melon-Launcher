@@ -10,10 +10,10 @@ use crate::play::Install;
 use crate::store::cleanup::{self, Item};
 use crate::store::global::{self, Kind};
 use crate::store::settings::Settings;
-use melon::gui::widgets::Rect;
-use melon::gui::widgets::edit_box::EditBox;
-use melon::prepare::hashes::Verdict;
-use melon::prepare::{self, Found};
+use super::kit::Rect;
+use super::kit::TextField;
+use melon_base::prepare::hashes::Verdict;
+use melon_base::prepare::{self, Found};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -54,8 +54,8 @@ enum HashStatus {
 
 pub struct SettingsMenu {
     tab: Tab,
-    jvm_args: EditBox,
-    assets_path: EditBox,
+    jvm_args: TextField,
+    assets_path: TextField,
     /// The client jar assets are extracted from.
     found: Option<Found>,
     sha1: Option<String>,
@@ -69,9 +69,9 @@ pub struct SettingsMenu {
 
 impl SettingsMenu {
     pub fn new(home: &Path, settings: &Settings) -> Self {
-        let mut jvm_args = EditBox::new(String::new(), 200.0, 16.0);
+        let mut jvm_args = TextField::new(String::new());
         jvm_args.set_value(settings.jvm_args.as_deref().unwrap_or(""));
-        let mut assets_path = EditBox::new(String::new(), 200.0, 16.0);
+        let mut assets_path = TextField::new(String::new());
         assets_path.set_value(&settings.assets_dir(home).display().to_string());
         let mut menu = Self {
             tab: Tab::General,
@@ -98,7 +98,7 @@ impl SettingsMenu {
         if let Some(sha1) = self.sha1.clone() {
             let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let _ = tx.send(prepare::hashes::verify(melon::home::VERSION, &sha1));
+                let _ = tx.send(prepare::hashes::verify(melon_base::home::VERSION, &sha1));
             });
             self.hash_rx = Some(rx);
             self.hash = HashStatus::Checking;
@@ -147,7 +147,7 @@ fn folder_row(cx: &mut Cx, x: f32, y: f32, w: f32, label: &str, path: &Path) -> 
     cx.small_label(&path.display().to_string(), x, y + 13.0, w - 70.0, theme::DIM);
     if cx.button(Rect::new(x + w - 60.0, y + 2.0, 60.0, BUTTON_H), cx.t("common.open"), Btn::NORMAL) {
         let _ = std::fs::create_dir_all(path);
-        melon::platform::open_dir(path);
+        melon_base::platform::open_dir(path);
     }
     y + 26.0
 }
@@ -245,7 +245,7 @@ impl Shell {
             let path = match index {
                 0 => Some(None),
                 i if i <= runtimes.len() => Some(Some(runtimes[i - 1].path.display().to_string())),
-                _ => melon::platform::pick_file(cx.t("java.browse"), if cfg!(windows) { "exe" } else { "*" })
+                _ => melon_base::platform::pick_file(cx.t("java.browse"), if cfg!(windows) { "exe" } else { "*" })
                     .map(|p| Some(p.display().to_string())),
             };
             if let Some(path) = path {
@@ -279,7 +279,7 @@ impl Shell {
         y += 16.0 + 12.0;
 
         y = cx.section(cx.t("settings.jvm_args"), x, y, w);
-        let mut edit = std::mem::replace(&mut self.settings_menu.jvm_args, EditBox::new(String::new(), 0.0, 0.0));
+        let mut edit = std::mem::replace(&mut self.settings_menu.jvm_args, TextField::new(""));
         if cx.field(&mut edit, Rect::new(x + 1.0, y + 1.0, w - 2.0, 16.0)).changed {
             let value = edit.value();
             self.settings.jvm_args = Some(value.trim().to_owned()).filter(|v| !v.is_empty());
@@ -311,7 +311,7 @@ impl Shell {
             (true, true) => ("assets.stale", theme::WARN),
             (true, false) => ("assets.ready", theme::ACCENT),
         };
-        cx.label(&cx.tf(key, &[melon::home::VERSION]), x, y + 1.0, w, color);
+        cx.label(&cx.tf(key, &[melon_base::home::VERSION]), x, y + 1.0, w, color);
         y += 16.0;
 
         y = cx.section(cx.t("assets.source"), x, y, w);
@@ -342,21 +342,21 @@ impl Shell {
             out.push(Action::Install(install, self.settings_menu.found.clone()));
         }
         if cx.button(Rect::new(x + 130.0 + GAP, y, 100.0, BUTTON_H), cx.t("assets.choose"), Btn::NORMAL.enabled(!status.busy))
-            && let Some(jar) = melon::platform::pick_file(cx.t("assets.choose"), "jar")
+            && let Some(jar) = melon_base::platform::pick_file(cx.t("assets.choose"), "jar")
         {
             self.settings_menu.set_found(Some(prepare::from_jar(jar)));
         }
         y += BUTTON_H + 12.0;
 
         y = cx.section(cx.t("folders.assets"), x, y, w);
-        let mut edit = std::mem::replace(&mut self.settings_menu.assets_path, EditBox::new(String::new(), 0.0, 0.0));
+        let mut edit = std::mem::replace(&mut self.settings_menu.assets_path, TextField::new(""));
         let event = cx.field(&mut edit, Rect::new(x + 1.0, y + 1.0, w - 2.0 - 2.0 * (60.0 + GAP), 16.0));
         let mut chosen = event.submitted.then(|| PathBuf::from(edit.value().trim()));
         if cx.button(Rect::new(x + w - 120.0 - GAP, y, 60.0, BUTTON_H), cx.t("common.browse"), Btn::NORMAL) {
-            chosen = melon::platform::pick_folder(cx.t("folders.assets"));
+            chosen = melon_base::platform::pick_folder(cx.t("folders.assets"));
         }
         if cx.button(Rect::new(x + w - 60.0, y, 60.0, BUTTON_H), cx.t("common.open"), Btn::NORMAL) {
-            melon::platform::open_dir(&self.settings.assets_dir(&home));
+            melon_base::platform::open_dir(&self.settings.assets_dir(&home));
         }
         if let Some(path) = chosen.filter(|p| !p.as_os_str().is_empty()) {
             self.settings.set_assets_path(&home, &path);
@@ -380,7 +380,7 @@ impl Shell {
             if cx.button(rect, cx.t(key), Btn::NORMAL) {
                 let path = dir.join(kind.folder());
                 let _ = std::fs::create_dir_all(&path);
-                melon::platform::open_dir(&path);
+                melon_base::platform::open_dir(&path);
             }
         }
         // TODO: shaderpacks: a global shader folder once the client loads shaders.

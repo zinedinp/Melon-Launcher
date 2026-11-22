@@ -3,8 +3,8 @@
 use super::kit::theme;
 use super::kit::{BUTTON_H, Btn, Cx, GAP};
 use super::shell::{Action, Purpose, Session, Shell, Status};
-use melon::auth::accounts::{Account, offline_uuid};
-use melon::gui::widgets::Rect;
+use melon_base::auth::accounts::{Account, offline_uuid};
+use super::kit::Rect;
 use std::time::{Duration, Instant};
 
 const ROW_H: f32 = 30.0;
@@ -131,7 +131,7 @@ impl Shell {
         cx.small_label(&text, x, y, w, color);
         cx.tooltip(line, cx.t("account.copy_uuid"));
         if cx.clicked(line) {
-            melon::platform::copy_to_clipboard(&uuid);
+            melon_base::platform::copy_to_clipboard(&uuid);
             self.copied_at = Some(Instant::now());
         }
         y += 16.0;

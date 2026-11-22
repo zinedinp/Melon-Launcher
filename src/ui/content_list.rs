@@ -2,20 +2,16 @@
 //! description.
 // TODO: remote mod/modpack download: a third source of rows next to the two folders.
 
-use super::kit::theme;
 use super::kit::icons;
-use super::kit::{BUTTON_H, Btn, Cx, Scroll};
+use super::kit::theme;
+use super::kit::{BUTTON_H, Btn, Cx, Rect, Scroll};
 use super::shell::Shell;
 use super::textures::{self, Textures};
-use melon::gui::widgets::Rect;
-use pumpkin_mod::{CodeKind, Manifest, ModsState, Side, list_mods, save_state};
-use std::io::Read;
+use crate::mods;
 use std::path::{Path, PathBuf};
 
 const ROW_H: f32 = 34.0;
 const ICON: f32 = 24.0;
-const MANIFEST: &str = "melon-mod.toml";
-const MOD_ICON: &str = "icon.png";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Tab {
@@ -32,8 +28,8 @@ struct Entry {
     description: String,
     /// A mod's version, or a plugin's file name.
     detail: String,
-    /// A mod's kind of code and side.
-    kinds: Option<(CodeKind, Side)>,
+    /// A mod's kind of code and side, as its manifest names them.
+    kinds: Option<(String, String)>,
     error: Option<String>,
     /// The zip an icon may be in.
     icon_zip: Option<PathBuf>,
@@ -43,37 +39,10 @@ struct Entry {
 pub struct ContentList {
     game_dir: Option<PathBuf>,
     tab: Tab,
-    state: ModsState,
+    state: mods::State,
     mods: Vec<Entry>,
     plugins: Vec<Entry>,
     scroll: Scroll,
-}
-
-/// `description` of a mod's manifest: a field the launcher reads on its own.
-fn description_in(zip: &Path) -> Option<String> {
-    let file = std::fs::File::open(zip).ok()?;
-    let mut archive = zip::ZipArchive::new(file).ok()?;
-    let mut text = String::new();
-    archive.by_name(MANIFEST).ok()?.read_to_string(&mut text).ok()?;
-    let table: toml::Table = toml::from_str(&text).ok()?;
-    Some(table.get("description")?.as_str()?.trim().to_owned())
-}
-
-fn code_key(code: CodeKind) -> &'static str {
-    match code {
-        CodeKind::None => "mod.code.none",
-        CodeKind::Wasm => "mod.code.wasm",
-        CodeKind::Source => "mod.code.source",
-        CodeKind::Prebuilt => "mod.code.prebuilt",
-    }
-}
-
-fn side_key(side: Side) -> &'static str {
-    match side {
-        Side::Client => "mod.side.client",
-        Side::Server => "mod.side.server",
-        Side::Both => "mod.side.both",
-    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -97,10 +66,18 @@ impl ContentList {
         let Some(game_dir) = self.game_dir.clone() else {
             return;
         };
-        self.state = melon::json_file::load(&game_dir.join("mods.json")).unwrap_or_default();
-        for (path, manifest) in list_mods(&game_dir.join("mods")) {
+        self.state = mods::State::load(&game_dir);
+        for (path, manifest) in mods::list(&game_dir.join("mods")) {
             self.mods.push(match manifest {
-                Ok(manifest) => mod_entry(path, &manifest),
+                Ok(manifest) => Entry {
+                    id: Some(manifest.id.clone()),
+                    name: manifest.display_name().to_owned(),
+                    description: manifest.description.clone().unwrap_or_default(),
+                    detail: manifest.version.clone(),
+                    kinds: Some((manifest.code, manifest.side)),
+                    error: None,
+                    icon_zip: Some(path),
+                },
                 Err(error) => Entry {
                     name: file_name(&path),
                     id: None,
@@ -141,26 +118,14 @@ impl ContentList {
         };
         let on = !self.state.is_enabled(id);
         self.state.set_enabled(id, on);
-        save_state(game_dir, &self.state).map_err(|e| format!("mods.json: {e}"))
-    }
-}
-
-fn mod_entry(path: PathBuf, manifest: &Manifest) -> Entry {
-    Entry {
-        id: Some(manifest.id.clone()),
-        name: manifest.display_name().to_owned(),
-        description: description_in(&path).unwrap_or_default(),
-        detail: manifest.version.clone(),
-        kinds: Some((manifest.code, manifest.side)),
-        error: None,
-        icon_zip: Some(path),
+        self.state.save(game_dir).map_err(|e| format!("mods.json: {e}"))
     }
 }
 
 fn row_icon(cx: &mut Cx, textures: &mut Textures, entry: &Entry, rect: Rect) {
     let texture = entry.icon_zip.as_ref().and_then(|zip| {
         let key = format!("mod:{}", zip.display());
-        textures.get(&key, || textures::png_in_zip(zip, MOD_ICON))
+        textures.get(&key, || textures::png_in_zip(zip, mods::ICON))
     });
     match texture {
         Some(texture) => cx.image(texture, rect),
@@ -196,7 +161,7 @@ impl Shell {
         if cx.button(open, "", Btn::NORMAL.icon(icons::FOLDER))
             && let Some(dir) = &list.game_dir
         {
-            melon::platform::open_dir(&dir.join(folder));
+            melon_base::platform::open_dir(&dir.join(folder));
         }
         cx.tooltip(open, cx.t("content.open_folder"));
         let reload = Rect::new(open.x - 2.0 - BUTTON_H, area.y, BUTTON_H, BUTTON_H);
@@ -244,9 +209,11 @@ impl Shell {
             cx.label(&entry.name, text_x, row.y + 4.0, text_w, name_color);
             let description = entry.error.as_deref().unwrap_or(&entry.description);
             cx.small_label(description, text_x, row.y + 15.0, text_w, theme::DIM);
-            let detail = match entry.kinds {
+            let detail = match &entry.kinds {
                 Some((code, side)) => {
-                    format!("{} - {} - {}", entry.detail, cx.t(code_key(code)), cx.t(side_key(side)))
+                    let code = cx.tr.get(&format!("mod.code.{code}")).to_owned();
+                    let side = cx.tr.get(&format!("mod.side.{side}")).to_owned();
+                    format!("{} - {code} - {side}", entry.detail)
                 }
                 None => entry.detail.clone(),
             };

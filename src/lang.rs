@@ -1,6 +1,6 @@
 //! The launcher's own texts, in `lang/<code>.json`.
 
-use melon::i18n::languages::Language;
+use melon_base::i18n::languages::Language;
 use std::collections::HashMap;
 
 const EN: &str = include_str!("../lang/en_us.json");

@@ -1,7 +1,7 @@
 //! Icons the window shows: instance icons and the icons inside mod zips.
 
 use image::RgbaImage;
-use melon::renderer::{Renderer, TextureId};
+use melon_base::gfx::{Renderer2d, TextureId};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -35,7 +35,7 @@ impl Textures {
     }
 
     /// Uploads the images read since the last frame.
-    pub fn update(&mut self, renderer: &mut Renderer) {
+    pub fn update(&mut self, renderer: &mut Renderer2d) {
         for (key, image) in self.waiting.drain(..) {
             self.loaded.insert(key, renderer.load_texture(&image).ok());
         }

@@ -1,15 +1,18 @@
 //! The launcher's widgets. Each one lays itself out, reacts and draws in a single call, once
 //! a frame, so a view reads top to bottom like the screen it makes.
 
+pub mod field;
 pub mod icons;
+pub mod paint;
 pub mod theme;
 
 use crate::lang::Strings;
 use icons::Icon;
-use melon::gui::screen::{CursorKind, TextEvent};
-use melon::gui::widgets::edit_box::EditBox;
-use melon::gui::widgets::{Rect, Ui};
-use melon::renderer::TextureId;
+use melon_base::gfx::TextureId;
+use paint::Painter;
+
+pub use field::{Key, TextField};
+pub use paint::Rect;
 use theme::Color;
 
 /// Height of a line of text.
@@ -22,6 +25,15 @@ pub const BUTTON_H: f32 = 18.0;
 pub const GAP: f32 = 6.0;
 const POPUP_ROW: f32 = 16.0;
 
+/// The pointer a widget asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorKind {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+}
+
 /// What happened since the last frame.
 #[derive(Default)]
 pub struct Input {
@@ -31,7 +43,7 @@ pub struct Input {
     pub double_click: bool,
     /// Wheel notches, up positive.
     pub scroll: f32,
-    pub keys: Vec<TextEvent>,
+    pub keys: Vec<Key>,
 }
 
 impl Input {
@@ -145,7 +157,7 @@ pub struct FieldEvent {
 
 /// A frame's painter and input.
 pub struct Cx<'a, 'u> {
-    pub ui: &'a mut Ui<'u>,
+    pub ui: &'a mut Painter<'u>,
     pub tr: &'a Strings,
     pub input: &'a Input,
     /// False for what lies under a menu, a popup or a modal: it draws but does not react.
@@ -157,7 +169,7 @@ pub struct Cx<'a, 'u> {
 }
 
 impl<'a, 'u> Cx<'a, 'u> {
-    pub fn new(ui: &'a mut Ui<'u>, tr: &'a Strings, input: &'a Input, popup: &'a mut Popup) -> Self {
+    pub fn new(ui: &'a mut Painter<'u>, tr: &'a Strings, input: &'a Input, popup: &'a mut Popup) -> Self {
         popup.opened_now = false;
         Self {
             ui,
@@ -251,7 +263,7 @@ impl<'a, 'u> Cx<'a, 'u> {
 
     /// Text wrapped to the width. Returns the height used.
     pub fn paragraph(&mut self, text: &str, x: f32, y: f32, width: f32, color: Color) -> f32 {
-        let lines = self.ui.font().wrap(text, width / SMALL);
+        let lines = self.ui.wrap(text, width / SMALL);
         for (i, line) in lines.iter().enumerate() {
             self.small(line, x, y + i as f32 * LINE * SMALL, color);
         }
@@ -455,8 +467,8 @@ impl<'a, 'u> Cx<'a, 'u> {
     }
 
     /// A one-line text field.
-    pub fn field(&mut self, edit: &mut EditBox, rect: Rect) -> FieldEvent {
-        (edit.x, edit.y, edit.w, edit.h) = (rect.x, rect.y, rect.w, rect.h);
+    pub fn field(&mut self, edit: &mut TextField, rect: Rect) -> FieldEvent {
+        edit.set_rect(rect);
         let mut event = FieldEvent::default();
         if self.hot(rect) {
             self.cursor = CursorKind::Text;
@@ -468,7 +480,7 @@ impl<'a, 'u> Cx<'a, 'u> {
         }
         if self.active && edit.focused() {
             for key in &self.input.keys {
-                if matches!(key, TextEvent::Enter) {
+                if matches!(key, Key::Enter) {
                     event.submitted = true;
                 } else if edit.handle(key) {
                     event.changed = true;
