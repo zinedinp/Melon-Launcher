@@ -1115,6 +1115,7 @@ dependencies = [
 [[package]]
 name = "melon-base"
 version = "0.1.0"
+source = "git+https://github.com/zinedinp/Melon-Client?branch=main#44ead40d59846ec73270ce85d5bb6cde29526b59"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1134,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "melon-launcher"
-version = "0.2.0-pre2"
+version = "0.2.0-pre3"
 dependencies = [
  "anyhow",
  "image",

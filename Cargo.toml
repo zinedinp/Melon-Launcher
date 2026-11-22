@@ -1,6 +1,6 @@
 [package]
 name = "melon-launcher"
-version = "0.2.0-pre2"
+version = "0.2.0-pre3"
 edition = "2024"
 rust-version = "1.100.0"
 description = "Melon launcher, versioned independently of the game client"
@@ -14,8 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-# TODO: `git = "https://github.com/zinedinp/Melon-Client"` once the client repository with this crate is pushed.
-melon-base = { path = "../Melon-Client/crates/melon-base" }
+melon-base = { git = "https://github.com/zinedinp/Melon-Client", branch = "main" }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

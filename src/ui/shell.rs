@@ -9,6 +9,7 @@ use super::kit::{self, BUTTON_H, Btn, Cx, GAP, Scroll};
 use super::login::Outcome;
 use super::settings_menu::SettingsMenu;
 use super::textures::Textures;
+use super::welcome::Welcome;
 use crate::catalog;
 use crate::cdn;
 use crate::java_play;
@@ -135,13 +136,18 @@ pub struct Shell {
     pub account_scroll: Scroll,
     /// Java runtimes found on this machine; looked for when first needed.
     javas: Option<Vec<java::Runtime>>,
+    /// The first-run setup, shown instead of the instances until it is done or skipped.
+    pub welcome: Option<Welcome>,
 }
 
 impl Shell {
     pub fn new(home: &Path) -> Self {
+        let fresh = !home.join("instances").exists() && !home.join("launcher.json").exists();
         instances::init(home);
         global::ensure(home);
-        let settings = Settings::load(home);
+        let mut settings = Settings::load(home);
+        settings.welcome |= fresh;
+        let welcome = settings.welcome.then(Welcome::new);
         let mut shell = Self {
             home: home.to_path_buf(),
             settings_menu: SettingsMenu::new(home, &settings),
@@ -162,6 +168,7 @@ impl Shell {
             textures: Textures::default(),
             account_scroll: Scroll::default(),
             javas: None,
+            welcome,
         };
         shell.reload();
         shell
@@ -391,6 +398,17 @@ impl Shell {
         let (page_was_open, prompt_was_open) = (self.page != Page::Main, self.prompt.is_some());
         let all = Rect::new(0.0, 0.0, cx.width(), cx.height());
         cx.fill(all, theme::BG);
+
+        if self.welcome.is_some() {
+            cx.active = free && self.prompt.is_none();
+            self.welcome_page(cx, status, &mut out);
+            if self.prompt.is_some() {
+                cx.active = free && prompt_was_open;
+                cx.shade();
+                self.prompt_dialog(cx);
+            }
+            return out;
+        }
 
         cx.active = free && self.page == Page::Main && self.prompt.is_none();
         self.topbar(cx, status, &mut out);

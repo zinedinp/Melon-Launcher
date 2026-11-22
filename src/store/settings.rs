@@ -43,6 +43,9 @@ pub struct Settings {
     /// Instance groups folded shut in the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub collapsed_groups: Vec<String>,
+    /// The first-run setup is still to be finished or skipped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub welcome: bool,
 }
 
 impl Settings {

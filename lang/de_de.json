@@ -208,5 +208,19 @@
   "version.installed": "(installiert)",
   "version.latest": "Neueste",
   "version.latest_is": "Neueste (%s)",
-  "version.local": "Lokale Binary"
+  "version.local": "Lokale Binary",
+  "welcome.account_note": "Melde dich mit dem Microsoft-Konto an, dem Minecraft gehört, um auf Online-Servern zu spielen. Für Einzelspieler und Offline-Server reicht ein Offline-Profil.",
+  "welcome.account_title": "Dein Konto",
+  "welcome.back": "Zurück",
+  "welcome.client": "Minecraft-Client",
+  "welcome.client_note": "Melon nimmt Texturen, Sounds und Sprachdateien aus deiner eigenen Minecraft-%s-Client-Jar. Nimm die Jar deiner eigenen Installation: Sie setzt voraus, dass du Minecraft besitzt.",
+  "welcome.continue": "Weiter",
+  "welcome.extract": "Entpacken und weiter",
+  "welcome.microsoft": "Mit Microsoft anmelden",
+  "welcome.no_jar": "Kein Minecraft-%s-Client gefunden. Starte %s einmal im offiziellen Launcher und suche erneut, oder wähle die Jar aus.",
+  "welcome.offline": "Offline-Profil",
+  "welcome.search": "Automatisch suchen",
+  "welcome.skip": "Vorerst überspringen",
+  "welcome.sub": "Zwei kurze Schritte. Beides lässt sich später in den Einstellungen ändern.",
+  "welcome.title": "Willkommen bei Melon"
 }

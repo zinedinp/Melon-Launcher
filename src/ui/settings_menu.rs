@@ -10,10 +10,10 @@ use crate::play::Install;
 use crate::store::cleanup::{self, Item};
 use crate::store::global::{self, Kind};
 use crate::store::settings::Settings;
+use super::jar::JarSource;
 use super::kit::Rect;
 use super::kit::TextField;
-use melon_base::prepare::hashes::Verdict;
-use melon_base::prepare::{self, Found};
+use melon_base::prepare;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -42,25 +42,12 @@ const TABS: [(Tab, &str); 7] = [
     (Tab::Advanced, "settings.advanced"),
 ];
 
-/// What checking the client jar against the official hash found.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HashStatus {
-    Idle,
-    Checking,
-    Match,
-    Mismatch,
-    Unknown,
-}
-
 pub struct SettingsMenu {
     tab: Tab,
     jvm_args: TextField,
     assets_path: TextField,
     /// The client jar assets are extracted from.
-    found: Option<Found>,
-    sha1: Option<String>,
-    hash: HashStatus,
-    hash_rx: Option<Receiver<Verdict>>,
+    pub jar: JarSource,
     /// What cleaning up found; `None` before the first look.
     found_items: Option<Vec<Item>>,
     scan_rx: Option<Receiver<Vec<Item>>>,
@@ -73,47 +60,19 @@ impl SettingsMenu {
         jvm_args.set_value(settings.jvm_args.as_deref().unwrap_or(""));
         let mut assets_path = TextField::new(String::new());
         assets_path.set_value(&settings.assets_dir(home).display().to_string());
-        let mut menu = Self {
+        Self {
             tab: Tab::General,
             jvm_args,
             assets_path,
-            found: None,
-            sha1: None,
-            hash: HashStatus::Idle,
-            hash_rx: None,
+            jar: JarSource::scan(home),
             found_items: None,
             scan_rx: None,
             cleanup_scroll: Scroll::default(),
-        };
-        menu.set_found(prepare::scan(home));
-        menu
-    }
-
-    /// The jar to extract from changed: checks it against the official hash.
-    fn set_found(&mut self, found: Option<Found>) {
-        self.sha1 = found.as_ref().and_then(|f| prepare::sha1_file(&f.jar));
-        self.found = found;
-        self.hash_rx = None;
-        self.hash = HashStatus::Idle;
-        if let Some(sha1) = self.sha1.clone() {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(prepare::hashes::verify(melon_base::home::VERSION, &sha1));
-            });
-            self.hash_rx = Some(rx);
-            self.hash = HashStatus::Checking;
         }
     }
 
     fn poll(&mut self) {
-        if let Some(verdict) = self.hash_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.hash_rx = None;
-            self.hash = match verdict {
-                Verdict::Match => HashStatus::Match,
-                Verdict::Mismatch { .. } => HashStatus::Mismatch,
-                Verdict::Unknown | Verdict::Offline => HashStatus::Unknown,
-            };
-        }
+        self.jar.poll();
         if let Some(items) = self.scan_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.scan_rx = None;
             self.found_items = Some(items);
@@ -315,36 +274,21 @@ impl Shell {
         y += 16.0;
 
         y = cx.section(cx.t("assets.source"), x, y, w);
-        let menu = &self.settings_menu;
-        let source = match &menu.found {
-            Some(found) => format!("{} ({})", found.label, found.jar.display()),
-            None => cx.t("assets.no_jar").to_owned(),
-        };
-        y += cx.paragraph(&source, x, y, w, theme::DIM) + 2.0;
-        let (key, color) = match menu.hash {
-            HashStatus::Idle => ("", theme::DIM),
-            HashStatus::Checking => ("assets.hash_checking", theme::DIM),
-            HashStatus::Match => ("assets.hash_ok", theme::ACCENT),
-            HashStatus::Mismatch => ("assets.hash_bad", theme::DANGER),
-            HashStatus::Unknown => ("assets.hash_unknown", theme::DIM),
-        };
-        if !key.is_empty() {
-            cx.small_label(cx.t(key), x, y, w, color);
-        }
-        y += 12.0;
-        let can_extract = !status.busy && menu.hash != HashStatus::Mismatch;
+        let missing = cx.t("assets.no_jar");
+        y = self.settings_menu.jar.draw(cx, x, y, w, missing);
+        let can_extract = !status.busy && !self.settings_menu.jar.rejected();
         let extract_key = if self.disk.assets_ready { "assets.extract_again" } else { "assets.extract" };
         if cx.button(Rect::new(x, y, 130.0, BUTTON_H), cx.t(extract_key), Btn::PRIMARY.enabled(can_extract)) {
             let install = Install {
                 assets: true,
                 version: None,
             };
-            out.push(Action::Install(install, self.settings_menu.found.clone()));
+            out.push(Action::Install(install, self.settings_menu.jar.found.clone()));
         }
         if cx.button(Rect::new(x + 130.0 + GAP, y, 100.0, BUTTON_H), cx.t("assets.choose"), Btn::NORMAL.enabled(!status.busy))
             && let Some(jar) = melon_base::platform::pick_file(cx.t("assets.choose"), "jar")
         {
-            self.settings_menu.set_found(Some(prepare::from_jar(jar)));
+            self.settings_menu.jar.set(Some(prepare::from_jar(jar)));
         }
         y += BUTTON_H + 12.0;
 
