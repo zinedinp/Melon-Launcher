@@ -9,6 +9,7 @@ mod jar;
 pub mod kit;
 pub mod login;
 pub mod overlay;
+mod provider_login;
 mod settings_menu;
 pub mod shell;
 mod textures;

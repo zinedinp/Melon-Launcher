@@ -30,6 +30,8 @@ pub struct TextField {
     all_selected: bool,
     focused: bool,
     max_len: usize,
+    /// Shows `*` for each character and keeps the text off the clipboard.
+    password: bool,
     hint: String,
     /// When the cursor last moved, so it shows right after.
     moved: Instant,
@@ -44,6 +46,7 @@ impl TextField {
             all_selected: false,
             focused: false,
             max_len: usize::MAX,
+            password: false,
             hint: hint.into(),
             moved: Instant::now(),
             rect: Rect::default(),
@@ -64,6 +67,19 @@ impl TextField {
         self.max_len = max;
         self.chars.truncate(max);
         self.cursor = self.cursor.min(self.chars.len());
+    }
+
+    /// A password box: masked, and never copied out.
+    pub fn set_password(&mut self, password: bool) {
+        self.password = password;
+    }
+
+    /// The characters as they are drawn.
+    fn shown(&self) -> Vec<char> {
+        match self.password {
+            true => vec!['*'; self.chars.len()],
+            false => self.chars.clone(),
+        }
     }
 
     pub fn focused(&self) -> bool {
@@ -91,9 +107,10 @@ impl TextField {
     /// The first character shown, so the cursor stays inside the box.
     fn first_shown(&self) -> usize {
         let room = (self.rect.w - 8.0).max(8.0);
+        let chars = self.shown();
         let mut first = 0;
         while first < self.cursor
-            && text_width(&self.chars[first..self.cursor].iter().collect::<String>()) > room
+            && text_width(&chars[first..self.cursor].iter().collect::<String>()) > room
         {
             first += 1;
         }
@@ -108,7 +125,7 @@ impl TextField {
             let first = self.first_shown();
             let mut pen = self.text_x();
             let mut cursor = first;
-            for c in &self.chars[first..] {
+            for c in &self.shown()[first..] {
                 let width = text_width(&c.to_string());
                 if pen + width / 2.0 > x {
                     break;
@@ -189,11 +206,15 @@ impl TextField {
                 false
             }
             Key::Copy => {
-                melon_base::platform::copy_to_clipboard(&self.value());
+                if !self.password {
+                    melon_base::platform::copy_to_clipboard(&self.value());
+                }
                 false
             }
             Key::Cut => {
-                melon_base::platform::copy_to_clipboard(&self.value());
+                if !self.password {
+                    melon_base::platform::copy_to_clipboard(&self.value());
+                }
                 self.all_selected = true;
                 self.clear_if_selected()
             }
@@ -210,7 +231,7 @@ impl TextField {
             }
         } else {
             let first = self.first_shown();
-            let shown: String = self.chars[first..].iter().collect();
+            let shown: String = self.shown()[first..].iter().collect();
             let shown = if text_width(&shown) > self.rect.w - 6.0 {
                 let mut cut = String::new();
                 for c in shown.chars() {
@@ -234,7 +255,7 @@ impl TextField {
         }
         if self.focused && self.moved.elapsed().as_millis() % 1000 < 500 {
             let first = self.first_shown();
-            let before: String = self.chars[first..self.cursor].iter().collect();
+            let before: String = self.shown()[first..self.cursor].iter().collect();
             let x = self.text_x() + text_width(&before);
             ui.fill(Rect::new(x, y - 1.0, 1.0, 10.0), theme::TEXT);
         }
@@ -272,6 +293,15 @@ mod tests {
         field.handle(&Key::SelectAll);
         assert!(field.handle(&Key::Paste("new".into())));
         assert_eq!(field.value(), "new");
+    }
+
+    #[test]
+    fn a_password_keeps_its_text_but_shows_stars() {
+        let mut field = TextField::new("");
+        field.set_password(true);
+        typed(&mut field, "secret:123");
+        assert_eq!(field.value(), "secret:123");
+        assert_eq!(field.shown().iter().collect::<String>(), "**********");
     }
 
     #[test]

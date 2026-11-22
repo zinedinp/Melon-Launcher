@@ -3,7 +3,7 @@
 use super::kit::theme;
 use super::kit::{BUTTON_H, Btn, Cx, GAP};
 use super::shell::{Action, Purpose, Session, Shell, Status};
-use melon_base::auth::accounts::{Account, offline_uuid};
+use melon_base::auth::accounts::Account;
 use super::kit::Rect;
 use std::time::{Duration, Instant};
 
@@ -13,11 +13,8 @@ const COPIED: Duration = Duration::from_millis(1500);
 
 /// The account's UUID in the usual 8-4-4-4-12 form.
 fn uuid_of(account: &Account) -> String {
-    match account {
-        Account::Offline { username } => offline_uuid(username).to_string(),
-        Account::Microsoft(stored) => uuid::Uuid::parse_str(&stored.uuid)
-            .map_or_else(|_| stored.uuid.clone(), |uuid| uuid.to_string()),
-    }
+    let raw = account.uuid();
+    uuid::Uuid::parse_str(&raw).map_or(raw, |uuid| uuid.to_string())
 }
 
 impl Shell {
@@ -37,8 +34,8 @@ impl Shell {
 
     fn account_list(&mut self, cx: &mut Cx, area: Rect, status: &Status, out: &mut Vec<Action>) {
         let half = ((area.w - GAP) / 2.0).floor();
-        let buttons_y = area.bottom() - BUTTON_H;
-        let rows = Rect::new(area.x, area.y, area.w, area.h - BUTTON_H - GAP);
+        let buttons_y = area.bottom() - 2.0 * BUTTON_H - 4.0;
+        let rows = Rect::new(area.x, area.y, area.w, area.h - 2.0 * BUTTON_H - 4.0 - GAP);
         cx.frame(rows, theme::FIELD, theme::EDGE);
         let inner = super::kit::inset(rows, 1.0);
         let accounts: Vec<Account> = self.accounts.list().to_vec();
@@ -64,8 +61,8 @@ impl Shell {
             let text_x = face.right() + 6.0;
             let text_w = row.right() - text_x - 4.0;
             cx.label(account.username(), text_x, row.y + 6.0, text_w, theme::TEXT);
-            let (key, color) = self.account_status(account, status);
-            cx.small_label(cx.t(key), text_x, row.y + 17.0, text_w, color);
+            let (text, color) = self.account_status(cx, account, status);
+            cx.small_label(&text, text_x, row.y + 17.0, text_w, color);
             if cx.clicked(row) && selected != Some(i) {
                 if status.busy {
                     self.notify(cx.t("play.blocked.busy"));
@@ -85,6 +82,11 @@ impl Shell {
         if cx.button(offline, cx.t("account.add_offline"), Btn::NORMAL.enabled(!status.busy)) {
             self.open_prompt(cx, Purpose::AddOffline, "");
         }
+        let other = Rect::new(area.x, buttons_y + BUTTON_H + 4.0, area.w, BUTTON_H);
+        if cx.button(other, cx.t("account.add_other"), Btn::NORMAL.enabled(!status.busy)) {
+            self.open_provider_dialog(cx, None);
+        }
+        cx.tooltip(other, cx.t("account.add_other_tip"));
     }
 
     fn account_detail(&mut self, cx: &mut Cx, area: Rect, account: &Account, status: &Status, out: &mut Vec<Action>) {
@@ -111,8 +113,8 @@ impl Shell {
         let mut y = area.y + 2.0;
         cx.label(account.username(), x, y, w, theme::TEXT);
         y += 12.0;
-        let (key, color) = self.account_status(account, status);
-        cx.small_label(cx.t(key), x, y, w, color);
+        let (text, color) = self.account_status(cx, account, status);
+        cx.small_label(&text, x, y, w, color);
         y += 16.0;
 
         y = cx.section(cx.t("account.uuid"), x, y, w);
@@ -156,12 +158,14 @@ impl Shell {
         y = cx.section(cx.t("panel.manage"), x, y, w);
         let third = ((w - 2.0 * GAP) / 3.0).floor().min(90.0);
         let rename = Rect::new(x, y, third, BUTTON_H);
-        let can_rename = !status.busy && !account.is_microsoft();
+        let can_rename = !status.busy && !account.is_online();
         if cx.button(rename, cx.t("manage.rename"), Btn::NORMAL.enabled(can_rename)) {
             self.open_prompt(cx, Purpose::RenameOffline, account.username());
         }
-        if account.is_microsoft() {
-            cx.tooltip(rename, cx.t("account.rename_microsoft"));
+        match account {
+            Account::Microsoft(_) => cx.tooltip(rename, cx.t("account.rename_microsoft")),
+            Account::Alternative(stored) => cx.tooltip(rename, &cx.tf("account.rename_service", &[&stored.provider.name])),
+            Account::Offline { .. } => {}
         }
         let index = self.accounts.selected_index();
         let lock = Rect::new(x + third + GAP, y, third, BUTTON_H);
@@ -187,7 +191,10 @@ impl Shell {
         if self.session_of(account, status) == Some(Session::Expired) {
             let again = Rect::new(x, y, (third * 2.0 + GAP).min(w), BUTTON_H);
             if cx.button(again, cx.t("account.sign_in_again"), Btn::PRIMARY.enabled(!status.busy)) {
-                out.push(Action::SignIn);
+                match account {
+                    Account::Alternative(stored) => self.open_provider_dialog(cx, Some(stored)),
+                    _ => out.push(Action::SignIn),
+                }
             }
         }
     }

@@ -129,7 +129,8 @@ impl RunningState {
         ));
     }
 
-    /// Readies a Java instance's assets, then the game starts.
+    /// Readies a Java instance's assets, and authlib-injector for an account of another sign-in
+    /// service, then the game starts.
     fn start_prepare(&mut self, request: PlayRequest, instance: Instance, home: &Path) {
         if self.prepare_job.is_some() || self.install_job.is_some() {
             return;
@@ -137,10 +138,22 @@ impl RunningState {
         let (tx, rx) = mpsc::channel();
         let assets = self.shell.settings.assets_dir(home);
         let home = home.to_path_buf();
+        let provider = request.account_key.as_deref().and_then(|key| {
+            let account = self.shell.accounts.list().iter().find(|a| a.key() == key)?;
+            account.provider().cloned()
+        });
         let thread = std::thread::spawn(move || {
-            java_play::prepare_assets(&home, &instance, &assets, &|message| {
+            let log = |message: String| {
                 let _ = tx.send(message);
-            })
+            };
+            java_play::prepare_assets(&home, &instance, &assets, &log)?;
+            if let Some(provider) = provider {
+                crate::authlib::ensure(&home, &log)?;
+                if let Err(e) = crate::authlib::save_metadata(&home, &provider) {
+                    log(format!("{} metadata not saved: {e}", provider.name));
+                }
+            }
+            Ok(())
         });
         self.show_progress("prepare");
         self.prepare_job = Some(PrepareJob {
@@ -441,7 +454,7 @@ fn report(game: &RunningGame, status: std::process::ExitStatus) -> CrashReport {
 }
 
 /// The keys a text field takes for a key press.
-fn keys_of(event: &KeyEvent, control: bool) -> Vec<Key> {
+fn keys_of(event: &KeyEvent, shortcut: bool) -> Vec<Key> {
     let named = |key| vec![key];
     match &event.logical_key {
         WinitKey::Named(NamedKey::Backspace) => named(Key::Backspace),
@@ -451,7 +464,7 @@ fn keys_of(event: &KeyEvent, control: bool) -> Vec<Key> {
         WinitKey::Named(NamedKey::Home) => named(Key::Home),
         WinitKey::Named(NamedKey::End) => named(Key::End),
         WinitKey::Named(NamedKey::Enter) => named(Key::Enter),
-        WinitKey::Character(c) if control => match c.to_lowercase().as_str() {
+        WinitKey::Character(c) if shortcut => match c.to_lowercase().as_str() {
             "a" => named(Key::SelectAll),
             "c" => named(Key::Copy),
             "x" => named(Key::Cut),
@@ -768,8 +781,9 @@ impl ApplicationHandler for App {
                 } else if escape {
                     state.shell.cancel(&mut state.popup);
                 } else {
-                    let control = state.modifiers.control_key();
-                    state.input.keys.extend(keys_of(&event, control));
+                    // AltGr arrives as Control+Alt: it types characters such as `@`, no shortcuts.
+                    let shortcut = state.modifiers.control_key() && !state.modifiers.alt_key();
+                    state.input.keys.extend(keys_of(&event, shortcut));
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {

@@ -3,7 +3,7 @@
 
 use image::RgbaImage;
 use melon_base::auth::accounts::Account;
-use melon_base::auth::skin;
+use melon_base::auth::skin::{self, SkinSource};
 use melon_base::gfx::{Renderer2d, TextureId};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -44,17 +44,22 @@ impl Heads {
             self.upload(renderer, key, head);
         }
         for account in accounts {
-            let Account::Microsoft(stored) = account else {
-                continue;
+            let (source, file_name) = match account {
+                Account::Microsoft(stored) => (SkinSource::mojang(), format!("{}.png", stored.uuid)),
+                Account::Alternative(stored) => (
+                    SkinSource::of(&stored.provider),
+                    format!("{}-{}.png", stored.provider.host(), stored.uuid),
+                ),
+                Account::Offline { .. } => continue,
             };
             let key = account.key();
             if !self.requested.insert(key.clone()) {
                 continue;
             }
-            let file = self.cache.join(format!("{}.png", stored.uuid));
+            let file = self.cache.join(file_name);
             match fresh_cache(&file) {
                 Some(head) => self.upload(renderer, key, Some(head)),
-                None => self.fetch(key, file),
+                None => self.fetch(key, account.uuid(), source, file),
             }
         }
     }
@@ -65,10 +70,10 @@ impl Heads {
         }
     }
 
-    fn fetch(&self, uuid: String, file: PathBuf) {
+    fn fetch(&self, key: String, uuid: String, source: SkinSource, file: PathBuf) {
         let sender = self.sender.clone();
         std::thread::spawn(move || {
-            let head = match skin::fetch_head(&uuid) {
+            let head = match skin::fetch_head_from(&source, &uuid) {
                 Ok(head) => {
                     if let Some(dir) = file.parent() {
                         let _ = std::fs::create_dir_all(dir);
@@ -78,7 +83,7 @@ impl Heads {
                 }
                 Err(_) => image::open(&file).ok().map(|image| image.to_rgba8()),
             };
-            let _ = sender.send((uuid, head));
+            let _ = sender.send((key, head));
         });
     }
 }

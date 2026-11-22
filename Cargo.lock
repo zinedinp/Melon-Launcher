@@ -1115,13 +1115,13 @@ dependencies = [
 [[package]]
 name = "melon-base"
 version = "0.1.0"
-source = "git+https://github.com/zinedinp/Melon-Client?branch=main#44ead40d59846ec73270ce85d5bb6cde29526b59"
 dependencies = [
  "anyhow",
  "arboard",
  "ash",
  "ash-window",
  "image",
+ "numerobis",
  "open",
  "raw-window-handle",
  "serde",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "melon-launcher"
-version = "0.2.0-pre3"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "image",
@@ -1185,6 +1185,17 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "miraculix"
+version = "0.5.8-beta"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bf487fd0ab6cbcb8e23baefdfa2fff4fc3a32aea2cf500f8a572c8920fa8a51"
+dependencies = [
+ "libc",
+ "raw-cpuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1283,6 +1294,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "numerobis"
+version = "0.3.3-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac4f4ee29a73e6ea328996f29f2e33c6f1b4b510f36bb4bb84d47b092d9eca88"
+dependencies = [
+ "libc",
+ "miraculix",
 ]
 
 [[package]]
@@ -1788,6 +1809,15 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags 2.13.2",
+]
 
 [[package]]
 name = "raw-window-handle"

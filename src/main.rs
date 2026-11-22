@@ -1,3 +1,4 @@
+mod authlib;
 mod catalog;
 mod cdn;
 mod java_play;

@@ -7,6 +7,7 @@ use super::kit::icons;
 use super::kit::theme;
 use super::kit::{self, BUTTON_H, Btn, Cx, GAP, Scroll};
 use super::login::Outcome;
+use super::provider_login::{self, ProviderDialog};
 use super::settings_menu::SettingsMenu;
 use super::textures::Textures;
 use super::welcome::Welcome;
@@ -144,6 +145,8 @@ pub struct Shell {
     javas: Option<Vec<java::Runtime>>,
     /// The first-run setup, shown instead of the instances until it is done or skipped.
     pub welcome: Option<Welcome>,
+    /// Signing in with a service other than Microsoft.
+    pub provider_dialog: Option<ProviderDialog>,
 }
 
 impl Shell {
@@ -177,6 +180,7 @@ impl Shell {
             account_scroll: Scroll::default(),
             javas: None,
             welcome,
+            provider_dialog: None,
         };
         shell.reload();
         shell
@@ -281,10 +285,10 @@ impl Shell {
             .is_some_and(|account| self.accounts.meta(account).locked)
     }
 
-    /// The selected Microsoft account's session has not been looked at.
+    /// The selected signed-in account's session has not been looked at.
     pub fn needs_check(&self) -> bool {
         self.selected_account()
-            .is_some_and(|a| a.is_microsoft() && !self.sessions.contains_key(&a.key()))
+            .is_some_and(|a| a.is_online() && !self.sessions.contains_key(&a.key()))
     }
 
     /// A login or session check ended.
@@ -325,20 +329,23 @@ impl Shell {
         })
     }
 
-    /// The text key and colour of an account's status line.
-    pub fn account_status(&self, account: &Account, status: &Status) -> (&'static str, theme::Color) {
+    /// The text and colour of an account's status line, naming its sign-in service.
+    pub fn account_status(&self, cx: &Cx, account: &Account, status: &Status) -> (String, theme::Color) {
         if self.accounts.meta(account).locked {
-            return ("account.locked", theme::DANGER);
+            return (cx.t("account.locked").to_owned(), theme::DANGER);
         }
-        if !account.is_microsoft() {
-            return ("account.offline", theme::DIM);
-        }
-        match self.session_of(account, status) {
+        let service = match account {
+            Account::Offline { .. } => return (cx.t("account.offline").to_owned(), theme::DIM),
+            Account::Microsoft(_) => "Microsoft",
+            Account::Alternative(stored) => stored.provider.name.as_str(),
+        };
+        let (key, color) = match self.session_of(account, status) {
             Some(Session::Checking) => ("account.checking", theme::DIM),
             Some(Session::Valid) => ("account.valid", theme::ACCENT),
             Some(Session::Expired) => ("account.expired", theme::DANGER),
-            None => ("account.microsoft", theme::DIM),
-        }
+            None => ("account.service", theme::DIM),
+        };
+        (cx.tf(key, &[service]), color)
     }
 
     pub fn facts<'a>(&'a self, status: &Status) -> Facts<'a> {
@@ -388,6 +395,8 @@ impl Shell {
     pub fn cancel(&mut self, popup: &mut kit::Popup) {
         if popup.is_open() {
             popup.close();
+        } else if self.provider_dialog.is_some() {
+            self.provider_dialog = None;
         } else if self.prompt.is_some() {
             self.prompt = None;
         } else {
@@ -405,21 +414,23 @@ impl Shell {
         // What opens in this frame reacts from the next one on: the press that opened it is
         // not its own.
         let (page_was_open, prompt_was_open) = (self.page != Page::Main, self.prompt.is_some());
+        let dialog_was_open = self.provider_dialog.is_some();
         let all = Rect::new(0.0, 0.0, cx.width(), cx.height());
         cx.fill(all, theme::BG);
 
         if self.welcome.is_some() {
-            cx.active = free && self.prompt.is_none();
+            cx.active = free && self.prompt.is_none() && self.provider_dialog.is_none();
             self.welcome_page(cx, status, &mut out);
             if self.prompt.is_some() {
                 cx.active = free && prompt_was_open;
                 cx.shade();
                 self.prompt_dialog(cx);
             }
+            self.provider_frame(cx, free && dialog_was_open);
             return out;
         }
 
-        cx.active = free && self.page == Page::Main && self.prompt.is_none();
+        cx.active = free && self.page == Page::Main && self.prompt.is_none() && self.provider_dialog.is_none();
         self.topbar(cx, status, &mut out);
         let body_y = TOPBAR_H + PAD;
         let body_h = (cx.height() - body_y - PAD).max(40.0);
@@ -431,7 +442,7 @@ impl Shell {
         self.instance_panel(cx, panel, status, &mut out);
 
         if self.page != Page::Main {
-            cx.active = free && page_was_open && self.prompt.is_none();
+            cx.active = free && page_was_open && self.prompt.is_none() && self.provider_dialog.is_none();
             cx.shade();
             let sheet = Rect::new(
                 24.0,
@@ -450,7 +461,35 @@ impl Shell {
             cx.shade();
             self.prompt_dialog(cx);
         }
+        self.provider_frame(cx, free && dialog_was_open);
         out
+    }
+
+    /// Opens the sign-in for another service; with `again`, for an account whose session ran out.
+    pub fn open_provider_dialog(&mut self, cx: &Cx, again: Option<&melon_base::auth::accounts::AltAccount>) {
+        let dialog = match again {
+            Some(account) => ProviderDialog::again(cx, self.home.clone(), account),
+            None => ProviderDialog::new(cx, self.home.clone()),
+        };
+        self.provider_dialog = Some(dialog);
+    }
+
+    fn provider_frame(&mut self, cx: &mut Cx, active: bool) {
+        let Some(dialog) = &mut self.provider_dialog else {
+            return;
+        };
+        cx.active = active;
+        match dialog.frame(cx) {
+            provider_login::Outcome::Open => {}
+            provider_login::Outcome::Cancelled => self.provider_dialog = None,
+            provider_login::Outcome::SignedIn => {
+                self.provider_dialog = None;
+                self.accounts = Accounts::load(&self.home);
+                if let Some(account) = self.accounts.selected() {
+                    self.sessions.insert(account.key(), Session::Valid);
+                }
+            }
+        }
     }
 
     /// A menu's frame: title bar with a close button. Returns the area under the title.
@@ -522,8 +561,8 @@ impl Shell {
                     None => cx.initial(face, &account.key(), account.username()),
                 }
                 cx.label(account.username(), text_x, rect.y + 4.0, text_w, theme::TEXT);
-                let (key, color) = self.account_status(&account, status);
-                cx.small_label(cx.t(key), text_x, rect.y + 15.0, text_w, color);
+                let (text, color) = self.account_status(cx, &account, status);
+                cx.small_label(&text, text_x, rect.y + 15.0, text_w, color);
             }
             None => {
                 cx.fill(face, theme::FIELD);

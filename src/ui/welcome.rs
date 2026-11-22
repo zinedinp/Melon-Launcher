@@ -216,8 +216,8 @@ impl Shell {
                 None => cx.initial(face, &account.key(), account.username()),
             }
             cx.label(account.username(), face.right() + 6.0, y + 1.0, w - 24.0, theme::TEXT);
-            let (key, color) = self.account_status(&account, status);
-            cx.small_label(cx.t(key), face.right() + 6.0, y + 11.0, w - 24.0, color);
+            let (text, color) = self.account_status(cx, &account, status);
+            cx.small_label(&text, face.right() + 6.0, y + 11.0, w - 24.0, color);
             y += 18.0 + 10.0;
         }
         let half = ((w - GAP) / 2.0).floor();
@@ -229,6 +229,12 @@ impl Shell {
         if cx.button(Rect::new(x + half + GAP, y, half, BUTTON_H), cx.t("welcome.offline"), Btn::NORMAL.enabled(free)) {
             self.open_prompt(cx, Purpose::AddOffline, "");
         }
+        y += BUTTON_H + 4.0;
+        let other = Rect::new(x, y, w, BUTTON_H);
+        if cx.button(other, cx.t("welcome.other"), Btn::NORMAL.enabled(free)) {
+            self.open_provider_dialog(cx, None);
+        }
+        cx.tooltip(other, cx.t("account.add_other_tip"));
         y += BUTTON_H + 16.0;
 
         if cx.button(Rect::new(x, y, 60.0, BUTTON_H), cx.t("welcome.back"), Btn::GHOST.small().enabled(free)) {

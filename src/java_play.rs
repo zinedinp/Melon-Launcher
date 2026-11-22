@@ -1,6 +1,7 @@
 //! Start a Java Edition instance from a client jar and its version JSON.
 
 use melon_base::auth::accounts::Account;
+use melon_base::auth::alt_sessions::Provider;
 use melon_base::home;
 use crate::store::instances::Instance;
 use crate::store::java;
@@ -16,6 +17,10 @@ pub struct Player {
     pub name: String,
     pub uuid: String,
     pub token: String,
+    /// `msa` for Microsoft, `mojang` for other services, as launchers fill `${user_type}`.
+    pub user_type: &'static str,
+    /// Another sign-in service: the game starts with authlib-injector pointed at it.
+    pub provider: Option<Provider>,
 }
 
 impl Player {
@@ -25,6 +30,15 @@ impl Player {
                 name: stored.username.clone(),
                 uuid: stored.uuid.clone(),
                 token: stored.access_token.clone(),
+                user_type: "msa",
+                provider: None,
+            },
+            Some(Account::Alternative(stored)) => Self {
+                name: stored.username.clone(),
+                uuid: stored.uuid.clone(),
+                token: stored.access_token.clone(),
+                user_type: "mojang",
+                provider: Some(stored.provider.clone()),
             },
             Some(Account::Offline { username }) => {
                 let uuid = melon_base::auth::accounts::offline_uuid(username).to_string();
@@ -32,12 +46,16 @@ impl Player {
                     name: username.clone(),
                     uuid,
                     token: "0".into(),
+                    user_type: "msa",
+                    provider: None,
                 }
             }
             None => Self {
                 name: "Player".into(),
                 uuid: "00000000-0000-0000-0000-000000000000".into(),
                 token: "0".into(),
+                user_type: "msa",
+                provider: None,
             },
         }
     }
@@ -169,7 +187,7 @@ pub fn command(
         ),
         ("auth_xuid", String::new()),
         ("clientid", String::new()),
-        ("user_type", "msa".into()),
+        ("user_type", player.user_type.into()),
         ("user_properties", "{}".into()),
         ("version_name", id.to_string()),
         (
@@ -208,6 +226,11 @@ pub fn command(
     ]);
     let mut jvm = java::jvm_args(settings, instance);
     jvm.push("-Dlog4j2.formatMsgNoLookups=true".into());
+    if let Some(provider) = &player.provider {
+        let agent = crate::authlib::jvm_args(home, provider)
+            .ok_or("authlib-injector is missing: it is downloaded when the game starts, check the connection")?;
+        jvm.extend(agent);
+    }
     let arguments = &version["arguments"];
     let mut jvm_list = Vec::new();
     let mut game = Vec::new();

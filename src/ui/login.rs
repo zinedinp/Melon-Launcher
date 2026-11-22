@@ -103,6 +103,11 @@ impl LoginFlow {
                     self.handle = None;
                     return Some(Outcome::Expired);
                 }
+                // Only the sign-in with another service asks these; it has its own dialog.
+                LoginEvent::ChooseProfile(_) | LoginEvent::NeedsCode => {
+                    self.state = LoginState::Idle;
+                    self.handle = None;
+                }
             }
         }
     }

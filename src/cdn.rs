@@ -178,7 +178,7 @@ pub fn fetch_text(url: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-fn download_verified(
+pub fn download_verified(
     url: &str,
     dest: &Path,
     expected: &str,
