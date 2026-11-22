@@ -16,7 +16,7 @@ use crate::java_play;
 use crate::play::{self, Facts, Install, PlayState};
 use crate::store::instances::{self, Engine, Instance};
 use crate::store::settings::Settings;
-use crate::store::{global, java};
+use crate::store::{java, shared};
 use melon_base::auth::accounts::{Account, Accounts};
 use super::kit::Rect;
 use super::kit::TextField;
@@ -93,6 +93,8 @@ pub enum Purpose {
     GroupInstance,
     AddOffline,
     RenameOffline,
+    NewShared,
+    RenameShared,
 }
 
 /// The dialog that asks for a name.
@@ -102,6 +104,8 @@ pub struct Prompt {
     error: bool,
     /// A new instance for Java Edition.
     java: bool,
+    /// The shared folder being renamed.
+    subject: String,
 }
 
 /// What is on disk for the selected instance, looked at every [`RECHECK`].
@@ -113,6 +117,8 @@ pub struct Disk {
     pub java_jar: bool,
     pub java_runtime: bool,
     pub last_server: Option<String>,
+    /// The shared folders, `global` first.
+    pub shared: Vec<String>,
 }
 
 pub struct Shell {
@@ -144,7 +150,9 @@ impl Shell {
     pub fn new(home: &Path) -> Self {
         let fresh = !home.join("instances").exists() && !home.join("launcher.json").exists();
         instances::init(home);
-        global::ensure(home);
+        if shared::ensure(home) {
+            instances::relink_all(home);
+        }
         let mut settings = Settings::load(home);
         settings.welcome |= fresh;
         let welcome = settings.welcome.then(Welcome::new);
@@ -220,6 +228,7 @@ impl Shell {
             java_jar: java.is_some_and(|i| java_play::locate(&self.home, i).is_some()),
             java_runtime: java.is_some_and(|i| java::resolve(&self.settings, i).is_some()),
             last_server: selected.as_ref().and_then(|i| instances::last_server(&i.path)),
+            shared: shared::list(&self.home),
         };
     }
 
@@ -615,6 +624,7 @@ impl Shell {
         let hint = match purpose {
             Purpose::AddOffline | Purpose::RenameOffline => "prompt.hint.profile",
             Purpose::GroupInstance => "prompt.hint.group",
+            Purpose::NewShared | Purpose::RenameShared => "prompt.hint.shared",
             _ => "prompt.hint.instance",
         };
         let mut edit = TextField::new(cx.t(hint).to_owned());
@@ -630,6 +640,7 @@ impl Shell {
             edit,
             error: false,
             java: false,
+            subject: value.to_owned(),
         });
     }
 
@@ -653,6 +664,8 @@ impl Shell {
             Purpose::GroupInstance => "prompt.group_instance",
             Purpose::AddOffline => "prompt.add_offline",
             Purpose::RenameOffline => "prompt.rename_offline",
+            Purpose::NewShared => "prompt.new_shared",
+            Purpose::RenameShared => "prompt.rename_shared",
         };
         let x = panel.x + 10.0;
         let inner = panel.w - 20.0;
@@ -700,6 +713,15 @@ impl Shell {
         self.prompt = Some(prompt);
     }
 
+    /// A shared folder was made or renamed. False when that failed.
+    fn shared_changed(&mut self, result: std::io::Result<()>) -> bool {
+        let done = result.is_ok();
+        if done {
+            self.reload();
+        }
+        done
+    }
+
     /// Does what the dialog asked for. False when the name cannot be used.
     fn submit_prompt(&mut self, prompt: &Prompt) -> bool {
         let value = prompt.edit.value();
@@ -730,6 +752,11 @@ impl Shell {
                     self.save_accounts();
                 }
                 return renamed;
+            }
+            Purpose::NewShared => return self.shared_changed(shared::create(&home, name)),
+            Purpose::RenameShared => {
+                let renamed = instances::rename_shared_folder(&home, &prompt.subject, name);
+                return self.shared_changed(renamed);
             }
         };
         let Some(instance) = made else {

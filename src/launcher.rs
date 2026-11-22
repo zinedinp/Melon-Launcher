@@ -6,9 +6,9 @@ use crate::cdn;
 use crate::java_play;
 use crate::lang::Strings;
 use crate::play::{self, Client, Facts, Install};
-use crate::store::global;
 use crate::store::instances::{self, Instance};
 use crate::store::settings::Settings;
+use crate::store::shared;
 use crate::ui::heads::Heads;
 use crate::ui::kit::paint::{Painter, Textures};
 use crate::ui::kit::{CursorKind, Cx, Input, Key, Popup, theme};
@@ -329,7 +329,7 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
     let settings = Settings::load(home);
     let instance = instances::find(home, &request.instance)
         .ok_or_else(|| format!("no instance {}", request.instance))?;
-    global::apply_options(home, &instance);
+    shared::apply_options(home, &instance);
     let mut cmd = if instance.is_java() {
         let accounts = auth::accounts::Accounts::load(home);
         let account = request
@@ -546,7 +546,7 @@ impl App {
         }
         let home = self.home.as_path();
         if let Some(instance) = instances::find(home, &game.instance) {
-            global::collect_options(home, &instance);
+            shared::collect_options(home, &instance);
         }
         let crashed = status.filter(|s| !s.success() && !game.stopped);
         let finished = Finished {

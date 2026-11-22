@@ -3,7 +3,7 @@
 //! `instances.json` keeps the fields the game client also reads and rewrites; what only the
 //! launcher knows lives in `launcher_instances.json`, which the client never touches.
 
-use super::global::{self, Kind};
+use super::shared::{self, Kind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -62,15 +62,17 @@ pub struct Instance {
     pub group: Option<String>,
     pub played_secs: u64,
     pub last_played: Option<u64>,
-    /// `options.txt` comes from the global reference.
+    /// `options.txt` comes from the shared folder.
     pub use_global_options: bool,
     /// Melon client version; none follows the latest, [`LOCAL_VERSION`] a local binary.
     pub version: Option<String>,
     /// Java runtime of this instance; none for the launcher's.
     pub java_path: Option<String>,
     pub memory_mb: Option<u32>,
-    /// Folders linked to the global reference.
+    /// Folders linked to the shared folder.
     pub shared: Shared,
+    /// The shared folder its links and shared options come from.
+    pub shared_folder: String,
 }
 
 impl Instance {
@@ -83,7 +85,7 @@ impl Instance {
     }
 }
 
-/// Which folders of an instance are links to the global reference.
+/// Which folders of an instance are links into its shared folder.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shared {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -170,6 +172,9 @@ struct Extra {
     memory_mb: Option<u32>,
     #[serde(default)]
     shared: Shared,
+    /// None: [`shared::GLOBAL`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shared_folder: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -352,6 +357,7 @@ fn from_meta(id: &str, path: &Path, store: &Store, extras: &Extras) -> Instance 
         java_path: extra.java_path,
         memory_mb: extra.memory_mb,
         shared: extra.shared,
+        shared_folder: extra.shared_folder.unwrap_or_else(|| shared::GLOBAL.to_owned()),
     }
 }
 
@@ -374,7 +380,7 @@ pub fn create(main: &Path, name: &str, engine: Engine) -> std::io::Result<Instan
     Ok(instance)
 }
 
-/// A copy of `from`'s game folder; folders linked to the global reference stay linked.
+/// A copy of `from`'s game folder; linked folders stay linked.
 pub fn copy(main: &Path, from_id: &str, name: &str) -> std::io::Result<Instance> {
     let from = find(main, from_id).ok_or(std::io::ErrorKind::NotFound)?;
     create_from(main, name, Some(&from))
@@ -420,11 +426,12 @@ fn create_from(main: &Path, name: &str, from: Option<&Instance>) -> std::io::Res
                 java_path: from.java_path.clone(),
                 memory_mb: from.memory_mb,
                 shared: from.shared,
+                shared_folder: (from.shared_folder != shared::GLOBAL).then(|| from.shared_folder.clone()),
             },
         );
         for kind in Kind::ALL {
             if from.shared.get(kind)
-                && let Err(e) = global::link(main, &path, kind)
+                && let Err(e) = shared::link(main, &from.shared_folder, &path, kind)
             {
                 eprintln!("{} not linked: {e}", kind.folder());
             }
@@ -437,17 +444,17 @@ fn create_from(main: &Path, name: &str, from: Option<&Instance>) -> std::io::Res
     Ok(from_meta(&id, &path, &store, &extras))
 }
 
-/// Copies a game folder without logs, caches and links to the global reference.
+/// Copies a game folder without logs, caches and links into shared folders.
 fn copy_home(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();
         let src = entry.path();
-        if NOT_COPIED.iter().any(|n| name == *n) || global::is_link(&src) {
+        if NOT_COPIED.iter().any(|n| name == *n) || shared::is_link(&src) {
             continue;
         }
-        if name.to_string_lossy().ends_with(global::OWN_SUFFIX) {
+        if name.to_string_lossy().ends_with(shared::OWN_SUFFIX) {
             continue;
         }
         let dest = to.join(&name);
@@ -528,15 +535,63 @@ pub fn set_memory(main: &Path, id: &str, memory_mb: Option<u32>) -> std::io::Res
     edit_extra(main, id, |extra| extra.memory_mb = memory_mb)
 }
 
-/// Links a folder of the instance to the global reference, or gives it its own again.
+/// Links a folder of the instance into its shared folder, or gives it its own again.
 pub fn set_shared(main: &Path, id: &str, kind: Kind, on: bool) -> std::io::Result<Instance> {
     let instance = find(main, id).ok_or(std::io::ErrorKind::NotFound)?;
     if on {
-        global::link(main, &instance.path, kind)?;
+        shared::link(main, &instance.shared_folder, &instance.path, kind)?;
     } else {
-        global::unlink(&instance.path, kind)?;
+        shared::unlink(&instance.path, kind)?;
     }
     edit_extra(main, id, |extra| extra.shared.set(kind, on))
+}
+
+/// Links the instance's linked folders into the shared folder `set`.
+fn relink(main: &Path, instance: &Instance, set: &str) -> std::io::Result<()> {
+    for kind in Kind::ALL {
+        if instance.shared.get(kind) {
+            shared::link(main, set, &instance.path, kind)?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves the instance to another shared folder; its linked folders follow.
+pub fn set_shared_folder(main: &Path, id: &str, set: &str) -> std::io::Result<Instance> {
+    let instance = find(main, id).ok_or(std::io::ErrorKind::NotFound)?;
+    if !shared::list(main).iter().any(|name| name == set) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    relink(main, &instance, set)?;
+    edit_extra(main, id, |extra| {
+        extra.shared_folder = (set != shared::GLOBAL).then(|| set.to_owned());
+    })
+}
+
+/// Renames a shared folder; the instances using it follow.
+pub fn rename_shared_folder(main: &Path, from: &str, to: &str) -> std::io::Result<()> {
+    shared::rename(main, from, to)?;
+    let to = to.trim();
+    let mut extras = Extras::load(main);
+    for extra in extras.instances.values_mut() {
+        if extra.shared_folder.as_deref() == Some(from) {
+            extra.shared_folder = Some(to.to_owned());
+        }
+    }
+    extras.save(main);
+    for instance in list(main).iter().filter(|i| i.shared_folder == to) {
+        relink(main, instance, to)?;
+    }
+    Ok(())
+}
+
+/// Links every instance again, after the shared folders moved.
+pub fn relink_all(main: &Path) {
+    for instance in list(main) {
+        if let Err(e) = relink(main, &instance, &instance.shared_folder) {
+            eprintln!("{} not linked again: {e}", instance.name);
+        }
+    }
 }
 
 /// Copies a PNG in as the instance's icon.
@@ -544,11 +599,11 @@ pub fn set_icon(instance: &Instance, png: &Path) -> std::io::Result<()> {
     std::fs::copy(png, instance.icon_path()).map(|_| ())
 }
 
-/// Deletes an instance with everything in it; the global reference stays.
+/// Deletes an instance with everything in it; its shared folder stays.
 pub fn delete(main: &Path, id: &str) -> std::io::Result<()> {
     let instance = find(main, id).ok_or(std::io::ErrorKind::NotFound)?;
     for kind in Kind::ALL {
-        global::drop_link(&instance.path, kind)?;
+        shared::drop_link(&instance.path, kind)?;
     }
     std::fs::remove_dir_all(&instance.path)?;
     let mut store = Store::load(main);
@@ -690,7 +745,7 @@ mod tests {
         std::fs::write(a.path.join("saves").join("mine.txt"), "own").unwrap();
         let a = set_shared(&main, &a.id, Kind::Saves, true).unwrap();
         assert!(a.shared.saves);
-        let world = global::dir(&main).join("saves").join("world.txt");
+        let world = shared::dir(&main, shared::GLOBAL).join("saves").join("world.txt");
         std::fs::write(&world, "shared").unwrap();
         assert!(a.path.join("saves").join("world.txt").is_file());
         assert!(!a.path.join("saves").join("mine.txt").exists());
@@ -700,7 +755,32 @@ mod tests {
 
         set_shared(&main, &a.id, Kind::Saves, true).unwrap();
         delete(&main, &a.id).unwrap();
-        assert!(world.is_file(), "deleting an instance keeps the global reference");
+        assert!(world.is_file(), "deleting an instance keeps the shared folder");
+        let _ = std::fs::remove_dir_all(main);
+    }
+
+    #[test]
+    fn links_follow_the_instance_to_another_shared_folder_and_through_a_rename() {
+        let main = scratch("shared-move");
+        init(&main);
+        shared::ensure(&main);
+        let a = create(&main, "Mover", Engine::Melon).unwrap();
+        set_shared(&main, &a.id, Kind::Mods, true).unwrap();
+        shared::create(&main, "Modded").unwrap();
+        let a = set_shared_folder(&main, &a.id, "Modded").unwrap();
+        assert_eq!(a.shared_folder, "Modded");
+        std::fs::write(shared::dir(&main, "Modded").join("mods").join("m.zip"), "x").unwrap();
+        assert!(a.path.join("mods").join("m.zip").is_file());
+
+        rename_shared_folder(&main, "Modded", "Old versions").unwrap();
+        let a = find(&main, &a.id).unwrap();
+        assert_eq!(a.shared_folder, "Old versions");
+        assert!(shared::is_link(&a.path.join("mods")));
+        assert!(a.path.join("mods").join("m.zip").is_file(), "the link points at the new name");
+
+        let a = set_shared_folder(&main, &a.id, shared::GLOBAL).unwrap();
+        assert_eq!(a.shared_folder, shared::GLOBAL);
+        assert!(!a.path.join("mods").join("m.zip").exists());
         let _ = std::fs::remove_dir_all(main);
     }
 }

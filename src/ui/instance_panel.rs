@@ -5,10 +5,10 @@ use super::instance_grid::icon_key;
 use super::kit::icons;
 use super::kit::theme;
 use super::kit::{BUTTON_H, Btn, Cx, GAP};
-use super::shell::{Action, Purpose, Shell, Status};
+use super::shell::{Action, Page, Purpose, Shell, Status};
 use crate::catalog;
 use crate::play::PlayState;
-use crate::store::global::{self, Kind};
+use crate::store::shared::{self, Kind};
 use crate::store::instances::{self, Engine, Instance, LOCAL_VERSION};
 use super::kit::Rect;
 
@@ -148,7 +148,7 @@ impl Shell {
     /// The narrow column: version or Java, folders, statistics, sharing, managing.
     fn side_column(&mut self, cx: &mut Cx, area: Rect, instance: &Instance, status: &Status) {
         let java_h = if instance.is_java() { 122.0 } else { 54.0 };
-        let content_h = java_h + 8.0 + (11.0 + 4.0 * ROW + 8.0) + (11.0 + 36.0 + 8.0) + (11.0 + 6.0 * ROW + 8.0) + (11.0 + 2.0 * ROW + 4.0);
+        let content_h = java_h + 8.0 + (11.0 + 4.0 * ROW + 8.0) + (11.0 + 36.0 + 8.0) + (11.0 + 7.0 * ROW + 8.0) + (11.0 + 2.0 * ROW + 4.0);
         let mut scroll = std::mem::take(&mut self.side_scroll);
         let mut y = scroll.begin(cx, area, content_h);
         let (x, w) = (area.x, area.w - 5.0);
@@ -369,9 +369,37 @@ impl Shell {
         block.bottom()
     }
 
-    /// Which folders come from the global reference, and copying from it once.
+    /// Which shared folder the instance uses, which of its folders are linked into it, and
+    /// copying from it once.
     fn sharing_block(&mut self, cx: &mut Cx, x: f32, y: f32, w: f32, instance: &Instance, locked: bool) -> f32 {
         let mut y = cx.section(cx.t("panel.sharing"), x, y, w);
+        let sets = self.disk.shared.clone();
+        let current = sets.iter().position(|s| *s == instance.shared_folder);
+        let label = cx.tf("shared.folder", &[&instance.shared_folder]);
+        let manage = cx.t("shared.manage").to_owned();
+        let items = sets.clone();
+        let rect = Rect::new(x, y, w, ROW - 2.0);
+        let picked = cx.dropdown("shared-folder", rect, &label, !locked, move || {
+            let mut items = items;
+            items.push(manage);
+            (items, current)
+        });
+        cx.tooltip(rect, cx.t("shared.folder_tip"));
+        match picked {
+            Some(index) if index < sets.len() => {
+                if sets[index] != instance.shared_folder {
+                    let set = instances::set_shared_folder(&self.home, &instance.id, &sets[index]);
+                    self.report(set);
+                    self.reload();
+                }
+            }
+            Some(_) => {
+                self.settings_menu.show_shared();
+                self.page = Page::Settings;
+            }
+            None => {}
+        }
+        y += ROW;
         let copy_w = 40.0;
         let row = |y: f32| (Rect::new(x, y, w - copy_w - 30.0, ROW), Rect::new(x + w - copy_w - 24.0, y + 1.0, copy_w, ROW - 2.0), Rect::new(x + w - 20.0, y, 20.0, ROW));
         for kind in Kind::ALL {
@@ -384,9 +412,9 @@ impl Shell {
             let indent = if linked { 12.0 } else { 0.0 };
             cx.label(cx.t(kind_key(kind)), label.x + indent, label.y + 5.0, label.w - indent, color);
             if cx.button(copy, cx.t("share.copy"), Btn::GHOST.small().enabled(!linked && !locked)) {
-                let copied = global::copy_into(&self.home, &instance.path, kind);
+                let copied = shared::copy_into(&self.home, &instance.shared_folder, &instance.path, kind);
                 if self.report(copied).is_some() {
-                    self.notify(cx.tf("share.copied", &[cx.t(kind_key(kind))]));
+                    self.notify(cx.tf("share.copied", &[cx.t(kind_key(kind)), &instance.shared_folder]));
                     self.content.set_instance(Some(instance.path.clone()));
                 }
             }
@@ -403,9 +431,9 @@ impl Shell {
         let linked = instance.use_global_options;
         cx.label(cx.t("share.options"), label.x, label.y + 5.0, label.w, if linked { theme::ACCENT } else { theme::TEXT });
         if cx.button(copy, cx.t("share.copy"), Btn::GHOST.small().enabled(!linked && !locked)) {
-            let copied = global::copy_options_into(&self.home, &instance.path);
+            let copied = shared::copy_options_into(&self.home, &instance.shared_folder, &instance.path);
             if self.report(copied).is_some() {
-                self.notify(cx.tf("share.copied", &[cx.t("share.options")]));
+                self.notify(cx.tf("share.copied", &[cx.t("share.options"), &instance.shared_folder]));
             }
         }
         cx.tooltip(copy, cx.t("share.copy_tip"));

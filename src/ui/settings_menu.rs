@@ -1,14 +1,14 @@
-//! The launcher's settings: language, Java, folders, assets, the global reference, cleaning up.
+//! The launcher's settings: language, Java, folders, assets, shared folders, cleaning up.
 
 use super::kit::theme;
 use super::kit::{BUTTON_H, Btn, Cx, GAP, Scroll};
-use super::shell::{Action, Shell, Status};
+use super::shell::{Action, Purpose, Shell, Status};
 use crate::catalog;
 use crate::cdn;
 use crate::lang::LANGUAGES;
 use crate::play::Install;
 use crate::store::cleanup::{self, Item};
-use crate::store::global::{self, Kind};
+use crate::store::shared;
 use crate::store::settings::Settings;
 use super::jar::JarSource;
 use super::kit::Rect;
@@ -20,6 +20,7 @@ use std::sync::mpsc::{self, Receiver};
 const TAB_W: f32 = 96.0;
 const ROW: f32 = 20.0;
 const MEMORY_STEPS: [u32; 6] = [1024, 2048, 3072, 4096, 6144, 8192];
+const SHARED_ROW: f32 = 26.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -27,7 +28,7 @@ enum Tab {
     Java,
     Folders,
     Assets,
-    Global,
+    Shared,
     Cleanup,
     Advanced,
 }
@@ -37,7 +38,7 @@ const TABS: [(Tab, &str); 7] = [
     (Tab::Java, "settings.java"),
     (Tab::Folders, "settings.folders"),
     (Tab::Assets, "settings.assets"),
-    (Tab::Global, "settings.global"),
+    (Tab::Shared, "settings.shared_tab"),
     (Tab::Cleanup, "settings.cleanup"),
     (Tab::Advanced, "settings.advanced"),
 ];
@@ -52,6 +53,7 @@ pub struct SettingsMenu {
     found_items: Option<Vec<Item>>,
     scan_rx: Option<Receiver<Vec<Item>>>,
     cleanup_scroll: Scroll,
+    shared_scroll: Scroll,
 }
 
 impl SettingsMenu {
@@ -68,7 +70,13 @@ impl SettingsMenu {
             found_items: None,
             scan_rx: None,
             cleanup_scroll: Scroll::default(),
+            shared_scroll: Scroll::default(),
         }
+    }
+
+    /// Opens on the shared folders next time.
+    pub fn show_shared(&mut self) {
+        self.tab = Tab::Shared;
     }
 
     fn poll(&mut self) {
@@ -129,7 +137,7 @@ impl Shell {
             Tab::Java => self.settings_java(cx, page),
             Tab::Folders => self.settings_folders(cx, page),
             Tab::Assets => self.settings_assets(cx, page, status, out),
-            Tab::Global => self.settings_global(cx, page),
+            Tab::Shared => self.settings_shared(cx, page, status),
             Tab::Cleanup => self.settings_cleanup(cx, page, status),
             Tab::Advanced => self.settings_advanced(cx, page),
         }
@@ -255,7 +263,7 @@ impl Shell {
         y = folder_row(cx, x, y, w, cx.t("folders.melon"), &home);
         y = folder_row(cx, x, y, w, cx.t("folders.instances"), &home.join("instances"));
         y = folder_row(cx, x, y, w, cx.t("folders.versions"), &cdn::versions_dir(&home));
-        y = folder_row(cx, x, y, w, cx.t("folders.global"), &global::dir(&home));
+        y = folder_row(cx, x, y, w, cx.t("folders.shared"), &shared::root(&home));
         folder_row(cx, x, y, w, cx.t("folders.assets"), &self.settings.assets_dir(&home));
     }
 
@@ -311,32 +319,79 @@ impl Shell {
         cx.paragraph(cx.t("assets.path_note"), x, y + 26.0, w, theme::DIM);
     }
 
-    fn settings_global(&mut self, cx: &mut Cx, page: Rect) {
-        let (x, w) = (page.x, page.w.min(380.0));
-        let mut y = cx.section(cx.t("settings.global"), x, page.y, w);
-        y += cx.paragraph(cx.t("global.note"), x, y, w, theme::DIM) + 8.0;
-        let dir = global::dir(&self.home);
-        y = folder_row(cx, x, y, w, cx.t("folders.global"), &dir);
-        let third = ((w - 2.0 * GAP) / 3.0).floor();
-        let keys = ["folder.worlds", "folder.resourcepacks", "folder.mods", "folder.plugins"];
-        for (i, (kind, key)) in Kind::ALL.iter().zip(keys).enumerate() {
-            let rect = Rect::new(x + (i % 3) as f32 * (third + GAP), y + (i / 3) as f32 * (BUTTON_H + 4.0), third, BUTTON_H);
-            if cx.button(rect, cx.t(key), Btn::NORMAL) {
-                let path = dir.join(kind.folder());
+    fn settings_shared(&mut self, cx: &mut Cx, page: Rect, status: &Status) {
+        let (x, w) = (page.x, page.w.min(400.0));
+        let mut y = cx.section(cx.t("settings.shared"), x, page.y, w);
+        y += cx.paragraph(cx.t("shared.note"), x, y, w, theme::DIM) + 8.0;
+        let free = !status.busy && status.running.is_none();
+        if cx.button(Rect::new(x, y, 150.0, BUTTON_H), cx.t("shared.new"), Btn::PRIMARY.enabled(free)) {
+            self.open_prompt(cx, Purpose::NewShared, "");
+        }
+        let root = shared::root(&self.home);
+        if cx.button(Rect::new(x + w - 90.0, y, 90.0, BUTTON_H), cx.t("shared.open_all"), Btn::NORMAL) {
+            let _ = std::fs::create_dir_all(&root);
+            melon_base::platform::open_dir(&root);
+        }
+        y += BUTTON_H + 8.0;
+
+        let sets = self.disk.shared.clone();
+        let list = Rect::new(x, y, w, (sets.len() as f32 * SHARED_ROW + 2.0).min(page.bottom() - y));
+        cx.frame(list, theme::FIELD, theme::EDGE);
+        let inner = super::kit::inset(list, 1.0);
+        let content_h = sets.len() as f32 * SHARED_ROW;
+        let mut scroll = std::mem::take(&mut self.settings_menu.shared_scroll);
+        let top = scroll.begin(cx, inner, content_h);
+        let mut removed = None;
+        for (i, name) in sets.iter().enumerate() {
+            let row = Rect::new(inner.x, top + i as f32 * SHARED_ROW, inner.w - 3.0, SHARED_ROW);
+            if i > 0 {
+                cx.fill(Rect::new(row.x, row.y, row.w, 1.0), theme::EDGE);
+            }
+            let users = self.instances.iter().filter(|instance| instance.shared_folder == *name).count();
+            let global = name == shared::GLOBAL;
+            let buttons_w = 3.0 * 56.0 + 2.0 * 4.0;
+            let text_w = row.w - buttons_w - 14.0;
+            cx.label(name, row.x + 6.0, row.y + 4.0, text_w, if global { theme::ACCENT } else { theme::TEXT });
+            let mut detail = cx.tf("shared.used_by", &[&users.to_string()]);
+            if shared::dir(&self.home, name).join(shared::OPTIONS).is_file() {
+                detail.push_str(cx.t("shared.has_options"));
+            }
+            cx.small_label(&detail, row.x + 6.0, row.y + 15.0, text_w, theme::DIM);
+
+            let button = |n: f32| Rect::new(row.right() - 4.0 - (3.0 - n) * 56.0 - (2.0 - n) * 4.0, row.y + 4.0, 56.0, BUTTON_H);
+            if cx.button(button(0.0), cx.t("common.open"), Btn::NORMAL.small()) {
+                let path = shared::dir(&self.home, name);
                 let _ = std::fs::create_dir_all(&path);
                 melon_base::platform::open_dir(&path);
             }
+            let rename = button(1.0);
+            if cx.button(rename, cx.t("manage.rename"), Btn::NORMAL.small().enabled(free && !global)) {
+                self.open_prompt(cx, Purpose::RenameShared, name);
+            }
+            let delete = button(2.0);
+            let what = format!("shared:{name}");
+            let label = if self.confirming(&what) { "manage.delete_sure" } else { "manage.delete" };
+            if cx.button(delete, cx.t(label), Btn::DANGER.small().enabled(free && !global && users == 0))
+                && self.confirmed(&what)
+            {
+                removed = Some(name.clone());
+            }
+            if global {
+                cx.tooltip(rename, cx.t("shared.global_fixed"));
+                cx.tooltip(delete, cx.t("shared.global_fixed"));
+            } else if users > 0 {
+                cx.tooltip(delete, cx.t("shared.in_use"));
+            } else {
+                cx.tooltip(delete, cx.t("shared.delete_tip"));
+            }
         }
-        // TODO: shaderpacks: a global shader folder once the client loads shaders.
-        let shaders = Rect::new(x + third + GAP, y + BUTTON_H + 4.0, third, BUTTON_H);
-        cx.button(shaders, cx.t("folder.shaders"), Btn::NORMAL.enabled(false));
-        cx.tooltip(shaders, cx.t("common.soon"));
-        y += 2.0 * (BUTTON_H + 4.0) + 8.0;
-
-        y = cx.section(cx.t("share.options"), x, y, w);
-        let options = dir.join(global::OPTIONS);
-        let key = if options.is_file() { "global.options_set" } else { "global.options_none" };
-        cx.paragraph(cx.t(key), x, y, w, theme::DIM);
+        scroll.end(cx, inner, content_h);
+        self.settings_menu.shared_scroll = scroll;
+        if let Some(name) = removed {
+            let done = shared::remove(&self.home, &name);
+            self.report(done);
+            self.recheck();
+        }
     }
 
     fn settings_cleanup(&mut self, cx: &mut Cx, page: Rect, status: &Status) {

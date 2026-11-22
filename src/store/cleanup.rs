@@ -36,7 +36,7 @@ fn size_of(path: &Path) -> u64 {
     if meta.is_file() {
         return meta.len();
     }
-    if !meta.is_dir() || super::global::is_link(path) {
+    if !meta.is_dir() || super::shared::is_link(path) {
         return 0;
     }
     std::fs::read_dir(path)

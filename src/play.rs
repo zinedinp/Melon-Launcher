@@ -177,6 +177,7 @@ mod tests {
             java_path: None,
             memory_mb: None,
             shared: Default::default(),
+            shared_folder: crate::store::shared::GLOBAL.into(),
         }
     }
 

@@ -1,10 +1,10 @@
-//! What the launcher keeps on disk: settings, instances, the global reference.
+//! What the launcher keeps on disk: settings, instances, the shared folders.
 
 pub mod cleanup;
-pub mod global;
 pub mod instances;
 pub mod java;
 pub mod settings;
+pub mod shared;
 
 use std::path::Path;
 
