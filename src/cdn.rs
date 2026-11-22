@@ -1,6 +1,4 @@
-//! Where published Melon binaries live. The game client and the launcher
-
-pub mod discover;
+//! Where published Melon binaries live on the CDN and on disk.
 
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -40,33 +38,81 @@ pub fn game_bin() -> &'static str {
     if cfg!(windows) { "melon.exe" } else { "melon" }
 }
 
-/// This crate's version (`0.7.5+mc26.3`): the game client.
-pub fn game_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
-
 /// Directory of a game version: `…/cdn/game/<version>/<os-arch>/`.
 pub fn game_url_for(version: &str) -> String {
     format!("{ORIGIN}/game/{version}/{}/", platform_folder())
 }
 
-/// Where the launcher stores the downloaded game client (`<melon folder>/melon`).
-pub fn game_dest(home: &Path) -> PathBuf {
-    home.join(game_bin())
+/// Where downloaded game clients live: `<melon folder>/versions/`.
+pub fn versions_dir(home: &Path) -> PathBuf {
+    home.join("versions")
 }
 
-/// Fetch the published game client into `home`, verify its SHA-256, and
-pub fn fetch_game(home: &Path, progress: &dyn Fn(&str)) -> Result<PathBuf, String> {
-    let version = discover::latest_game();
-    let dest = game_dest(home);
-    let folder = game_url_for(&version);
+/// The game client of `version`: `<melon folder>/versions/<version>/melon`.
+pub fn game_path(home: &Path, version: &str) -> PathBuf {
+    versions_dir(home).join(version).join(game_bin())
+}
+
+pub fn is_installed(home: &Path, version: &str) -> bool {
+    game_path(home, version).is_file()
+}
+
+/// Versions with a client on disk, newest first.
+pub fn installed_versions(home: &Path) -> Vec<String> {
+    let mut versions: Vec<String> = std::fs::read_dir(versions_dir(home))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|version| is_installed(home, version))
+        .collect();
+    versions.sort_by(|a, b| crate::catalog::compare_versions(b, a));
+    versions
+}
+
+/// A version that is safe as a folder name and in a URL.
+pub fn safe_version(version: &str) -> bool {
+    !version.is_empty()
+        && !version.starts_with('.')
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
+}
+
+/// What a download reports while it runs.
+#[derive(Clone, Debug)]
+pub struct Progress {
+    pub line: String,
+    /// Bytes so far and in all, once the size is known.
+    pub bytes: Option<(u64, u64)>,
+}
+
+impl Progress {
+    fn line(line: impl Into<String>) -> Self {
+        Self {
+            line: line.into(),
+            bytes: None,
+        }
+    }
+}
+
+/// Fetches the game client of `version` into `versions/<version>/` and verifies its SHA-256.
+pub fn fetch_game(
+    home: &Path,
+    version: &str,
+    progress: &dyn Fn(Progress),
+) -> Result<PathBuf, String> {
+    if !safe_version(version) {
+        return Err(format!("bad version {version}"));
+    }
+    let dest = game_path(home, version);
+    let folder = game_url_for(version);
     let sha_url = format!("{}{}.sha256", folder, game_bin());
     let bin_url = format!("{}{}", folder, game_bin());
-    let expected = if let Some(hash) = discover::game_sha(&version, platform_folder()) {
-        progress("discover sha256");
+    let expected = if let Some(hash) = crate::catalog::game_sha(version, platform_folder()) {
         hash
     } else {
-        progress(&format!("GET {sha_url}"));
+        progress(Progress::line(format!("GET {sha_url}")));
         fetch_text(&sha_url).and_then(|text| {
             parse_sha256_line(&text).ok_or_else(|| "sha256 file is not a hash".into())
         })?
@@ -75,10 +121,10 @@ pub fn fetch_game(home: &Path, progress: &dyn Fn(&str)) -> Result<PathBuf, Strin
         && let Some(have) = sha256_file(&dest)
         && have == expected
     {
-        progress("already up to date");
+        progress(Progress::line("already up to date"));
         return Ok(dest);
     }
-    progress(&format!("GET {bin_url}"));
+    progress(Progress::line(format!("GET {bin_url}")));
     download_verified(&bin_url, &dest, &expected, progress)?;
     #[cfg(unix)]
     {
@@ -89,18 +135,19 @@ pub fn fetch_game(home: &Path, progress: &dyn Fn(&str)) -> Result<PathBuf, Strin
         perm.set_mode(0o755);
         std::fs::set_permissions(&dest, perm).map_err(|e| format!("{}: {e}", dest.display()))?;
     }
-    progress(&format!("saved {}", dest.display()));
+    let _ = std::fs::write(dest.with_extension("sha256"), &expected);
+    progress(Progress::line(format!("saved {}", dest.display())));
     Ok(dest)
 }
 
 /// First token of a `sha256sum` line (`<hash>  <name>`).
-pub(super) fn parse_sha256_line(text: &str) -> Option<String> {
+pub fn parse_sha256_line(text: &str) -> Option<String> {
     let hash = text.split_whitespace().next()?;
     (hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| hash.to_ascii_lowercase())
 }
 
-pub(super) fn sha256_file(path: &Path) -> Option<String> {
+pub fn sha256_file(path: &Path) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
@@ -114,7 +161,7 @@ pub(super) fn sha256_file(path: &Path) -> Option<String> {
     Some(hex(hasher.finalize().as_ref()))
 }
 
-pub(super) fn fetch_text(url: &str) -> Result<String, String> {
+pub fn fetch_text(url: &str) -> Result<String, String> {
     let mut response = ureq::get(url)
         .header("User-Agent", UA)
         .config()
@@ -135,7 +182,7 @@ fn download_verified(
     url: &str,
     dest: &Path,
     expected: &str,
-    progress: &dyn Fn(&str),
+    progress: &dyn Fn(Progress),
 ) -> Result<(), String> {
     let response = ureq::get(url)
         .header("User-Agent", UA)
@@ -169,9 +216,12 @@ fn download_verified(
             file.write_all(&buf[..n])
                 .map_err(|e| format!("{}: {e}", part.display()))?;
             done += n as u64;
-            if done.saturating_sub(last_report) >= 1_048_576 {
+            if done.saturating_sub(last_report) >= 262_144 {
                 last_report = done;
-                progress(&format_progress(done, total));
+                progress(Progress {
+                    line: format_progress(done, total),
+                    bytes: total.filter(|t| *t > 0).map(|t| (done, t)),
+                });
             }
         }
         file.flush()
@@ -198,6 +248,6 @@ fn format_progress(done: u64, total: Option<u64>) -> String {
     }
 }
 
-pub(super) fn hex(bytes: &[u8]) -> String {
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

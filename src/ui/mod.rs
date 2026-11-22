@@ -1,17 +1,15 @@
-//! The launcher window's contents: the account list and the Microsoft login.
+//! The launcher window's contents.
 
-pub mod accounts;
+mod account_menu;
 pub mod compile;
+mod content_list;
 pub mod crash;
 pub mod heads;
-mod instance_detail;
-mod instance_page;
+mod instance_grid;
+mod instance_panel;
+pub mod kit;
 pub mod login;
 mod modal;
-mod mods_page;
-mod name_entry;
-mod row;
-mod settings_page;
-mod stats;
-mod welcome;
-pub mod window;
+mod settings_menu;
+pub mod shell;
+mod textures;

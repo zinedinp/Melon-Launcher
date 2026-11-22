@@ -150,11 +150,6 @@ impl LoginFlow {
         ));
     }
 
-    /// This build has Melon's own Azure app (env, compile-time, or data-folder file).
-    pub fn has_client_id(&self) -> bool {
-        self.client_id.is_some()
-    }
-
     /// Starts the device-code login for a new (or expired) account.
     pub fn start_login(&mut self) {
         let Some(client_id) = self.client_id.clone() else {

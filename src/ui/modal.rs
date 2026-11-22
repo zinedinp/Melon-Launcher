@@ -3,7 +3,7 @@
 use melon::gui::widgets::{Rect, Ui};
 
 pub const PADDING: f32 = 8.0;
-pub const TITLE_COLOR: [f32; 4] = [1.0, 0.9, 0.4, 1.0];
+pub const TITLE_COLOR: [f32; 4] = [0.93, 0.94, 0.95, 1.0];
 pub const BODY_COLOR: [f32; 4] = [0.85, 0.85, 0.85, 1.0];
 
 /// The backdrop and the panel at `panel`.
@@ -14,7 +14,7 @@ pub fn draw_panel(ui: &mut Ui, panel: Rect) {
     );
     ui.fill(
         Rect::new(panel.x - 1.0, panel.y - 1.0, panel.w + 2.0, panel.h + 2.0),
-        [0.4, 0.4, 0.46, 1.0],
+        super::kit::theme::FAINT,
     );
     let white = ui.assets.white;
     ui.draw_list.push_vgradient(
@@ -23,7 +23,7 @@ pub fn draw_panel(ui: &mut Ui, panel: Rect) {
         panel.y,
         panel.w,
         panel.h,
-        [0.09, 0.09, 0.12, 0.98],
-        [0.07, 0.07, 0.09, 0.98],
+        super::kit::theme::PANEL,
+        super::kit::theme::PANEL,
     );
 }

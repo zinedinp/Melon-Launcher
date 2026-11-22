@@ -2,7 +2,9 @@
 
 use melon::auth::accounts::Account;
 use melon::home;
-use melon::instances::Instance;
+use crate::store::instances::Instance;
+use crate::store::java;
+use crate::store::settings::Settings;
 use melon::prepare;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -48,11 +50,6 @@ pub struct Ready {
     pub minecraft: PathBuf,
 }
 
-/// Whether this Java instance has a jar we can launch.
-pub fn ready(home: &Path, instance: &Instance) -> bool {
-    locate(home, instance).is_some() && find_java().is_some()
-}
-
 pub fn locate(home: &Path, instance: &Instance) -> Option<Ready> {
     let version = instance.java_version.as_deref().unwrap_or(home::VERSION);
     let cache = home::minecraft_cache(home);
@@ -96,20 +93,6 @@ pub fn locate(home: &Path, instance: &Instance) -> Option<Ready> {
     None
 }
 
-pub fn find_java() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "java.exe" } else { "java" };
-    if let Some(home) = std::env::var_os("JAVA_HOME") {
-        let bin = PathBuf::from(home).join("bin").join(name);
-        if bin.is_file() {
-            return Some(bin);
-        }
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
-}
-
 /// Copy or extract this version's assets into `assets_dir` before launch.
 pub fn prepare_assets(
     home: &Path,
@@ -149,6 +132,7 @@ pub fn prepare_assets(
 /// The `java` command for this instance.
 pub fn command(
     home: &Path,
+    settings: &Settings,
     instance: &Instance,
     assets_dir: &Path,
     player: &Player,
@@ -156,7 +140,8 @@ pub fn command(
 ) -> Result<Command, String> {
     let ready =
         locate(home, instance).ok_or("No Java client jar / version JSON on this machine.")?;
-    let java = find_java().ok_or("No java on PATH (or JAVA_HOME).")?;
+    let java = java::resolve(settings, instance)
+        .ok_or("No Java runtime: set one in the settings, or install Java.")?;
     let version = read_json(&ready.json)?;
     let version = resolve(version, &ready.minecraft)?;
     let os = os_name();
@@ -221,7 +206,8 @@ pub fn command(
         ("resolution_height", String::new()),
         ("quickPlayMultiplayer", join.unwrap_or_default().to_string()),
     ]);
-    let mut jvm = vec!["-Xmx2G".into(), "-Dlog4j2.formatMsgNoLookups=true".into()];
+    let mut jvm = java::jvm_args(settings, instance);
+    jvm.push("-Dlog4j2.formatMsgNoLookups=true".into());
     let arguments = &version["arguments"];
     let mut jvm_list = Vec::new();
     let mut game = Vec::new();

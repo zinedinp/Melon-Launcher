@@ -9,3 +9,8 @@
 /logs/
 /downloads/
 /client_id.txt
+
+launcher_instances.json
+discover.json
+versions/
+global/
