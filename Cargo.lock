@@ -1115,7 +1115,7 @@ dependencies = [
 [[package]]
 name = "melon-base"
 version = "0.1.0"
-source = "git+https://github.com/zinedinp/Melon-Client?branch=main#c9c80ade1f6fa57df88f09c671b94257e1937791"
+source = "git+https://github.com/zinedinp/Melon-Client?branch=main#c0d5d60c2868da1ca072105353822ab6d1782560"
 dependencies = [
  "anyhow",
  "arboard",

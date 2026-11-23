@@ -101,6 +101,8 @@ impl Progress {
 pub struct CrashReport {
     /// The exit code, or what stands for none (a signal).
     pub code: String,
+    /// Text key explaining the code, when it is a known load failure.
+    pub hint: Option<&'static str>,
     /// The last lines it wrote.
     pub lines: Vec<String>,
     pub log: PathBuf,
@@ -116,9 +118,10 @@ pub enum Choice {
 impl CrashReport {
     pub fn frame(&self, cx: &mut Cx) -> Choice {
         let width = PANEL_W.min(cx.width() - 16.0) - PAD * 2.0;
-        let lines: Vec<String> = self
-            .lines
+        let hint = self.hint.map(|key| cx.t(key).to_owned());
+        let lines: Vec<String> = hint
             .iter()
+            .chain(&self.lines)
             .flat_map(|line| cx.ui.wrap(line, width / super::kit::SMALL))
             .collect();
         let lines = &lines[lines.len().saturating_sub(TAIL_LINES + 4)..];

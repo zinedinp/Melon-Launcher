@@ -285,6 +285,7 @@ struct RunningGame {
     account_key: Option<String>,
     instance: String,
     log: PathBuf,
+    file: Arc<Mutex<std::fs::File>>,
     /// Its last lines, filled by the threads copying its output.
     tail: Arc<Mutex<VecDeque<String>>>,
     pumps: Vec<JoinHandle<()>>,
@@ -337,8 +338,53 @@ fn melon_binary(home: &Path, settings: &Settings, instance: &Instance) -> Result
     }
 }
 
+/// The launcher's GPU, for the log.
+struct Gpu {
+    info: melon_base::gfx::DeviceInfo,
+    /// The Vulkan loader's version.
+    loader: String,
+}
+
+/// What the game log starts with: versions, system and hardware, so a shared log answers the
+/// usual questions. Nothing about the user or the session.
+fn system_lines(instance: &Instance, gpu: Option<&Gpu>) -> Vec<String> {
+    use melon_base::sysinfo;
+    let mut lines = vec![
+        format!(
+            "Melon Launcher {} ({} {})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
+        format!("OS: {}", sysinfo::os()),
+    ];
+    if let Some(session) = sysinfo::session() {
+        lines.push(format!("Session: {session}"));
+    }
+    lines.push(format!("CPU: {}", sysinfo::cpu()));
+    if let Some(memory) = sysinfo::memory() {
+        lines.push(format!("RAM: {memory}"));
+    }
+    if let Some(Gpu { info, loader }) = gpu {
+        lines.push(format!("GPU: {}{}, {}", info.name, info.type_suffix, info.vendor));
+        let detail = if info.driver_detail.is_empty() { String::new() } else { format!(" ({})", info.driver_detail) };
+        lines.push(format!("Driver: {}{detail}", info.driver));
+        lines.push(format!("Vulkan: device {}, loader {loader}", info.backend.trim_start_matches("Vulkan ")));
+    }
+    lines.push(format!("Runtimes: {}", sysinfo::runtimes()));
+    let engine = if instance.is_java() { "Java Edition" } else { "Melon" };
+    let version = instance.version.as_deref().unwrap_or("latest");
+    lines.push(format!("Instance: {engine}, version {version}"));
+    lines
+}
+
 /// Starts the game. Its output is copied to the terminal, `logs/latest.log` and a tail.
-fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<RunningGame, String> {
+fn spawn_game(
+    request: &PlayRequest,
+    validation: bool,
+    home: &Path,
+    gpu: Option<&Gpu>,
+) -> Result<RunningGame, String> {
     let settings = Settings::load(home);
     let instance = instances::find(home, &request.instance)
         .ok_or_else(|| format!("no instance {}", request.instance))?;
@@ -379,6 +425,12 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
     std::fs::create_dir_all(&logs).map_err(io)?;
     let log = logs.join("latest.log");
     let file = Arc::new(Mutex::new(std::fs::File::create(&log).map_err(io)?));
+    for line in system_lines(&instance, gpu) {
+        log_line(&file, &line);
+    }
+    // Only the program: the arguments of a Java start hold the access token.
+    let program = melon_base::sysinfo::home_relative(Path::new(cmd.get_program()));
+    log_line(&file, &format!("starting {program}"));
 
     // The game and java.exe are console programs: without this, Windows opens a console for them.
     #[cfg(windows)]
@@ -387,11 +439,13 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(io)?;
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            log_line(&file, &format!("could not start it: {e}"));
+            return Err(e.to_string());
+        }
+    };
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     let mut pumps = Vec::new();
     if let Some(out) = child.stdout.take() {
@@ -406,10 +460,18 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
         account_key: request.account_key.clone(),
         instance: instance.id,
         log,
+        file,
         tail,
         pumps,
         stopped: false,
     })
+}
+
+/// Writes a line of the launcher's own into the game log, marked as such.
+fn log_line(file: &Mutex<std::fs::File>, line: &str) {
+    if let Ok(mut file) = file.lock() {
+        let _ = writeln!(file, "[launcher] {line}");
+    }
 }
 
 /// Copies a pipe line by line to the terminal, the log file and the tail.
@@ -445,6 +507,42 @@ fn pump(
 }
 
 /// The popup for a game that ended with `status`.
+/// A Windows exit code that means the game could not even load: its status name and the text
+/// key explaining it.
+fn load_failure(code: i32) -> Option<(&'static str, &'static str)> {
+    if !cfg!(windows) {
+        return None;
+    }
+    match code as u32 {
+        0xC000_0135 => Some(("STATUS_DLL_NOT_FOUND", "crash.hint.dll_missing")),
+        0xC000_0139 => Some(("STATUS_ENTRYPOINT_NOT_FOUND", "crash.hint.entry_point")),
+        0xC000_007B => Some(("STATUS_INVALID_IMAGE_FORMAT", "crash.hint.bad_image")),
+        _ => None,
+    }
+}
+
+/// The exit code as shown: Windows status values (negative) in hex, "?" for none (a signal).
+fn exit_code(status: std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(c) if cfg!(windows) && c < 0 => format!("0x{:08X}", c as u32),
+        Some(c) => c.to_string(),
+        None => "?".to_owned(),
+    }
+}
+
+/// Notes in the game log how the game ended, so a log without any game output still says why.
+fn log_exit(game: &RunningGame, status: Option<std::process::ExitStatus>) {
+    let line = match status {
+        Some(status) => {
+            let name = status.code().and_then(load_failure).map(|(name, _)| format!(" ({name})"));
+            format!("game exited with code {}{}", exit_code(status), name.unwrap_or_default())
+        }
+        None => "lost track of the game process".to_owned(),
+    };
+    let stopped = if game.stopped { ", stopped by the launcher" } else { "" };
+    log_line(&game.file, &format!("{line}{stopped}"));
+}
+
 fn report(game: &RunningGame, status: std::process::ExitStatus) -> CrashReport {
     let lines = game
         .tail
@@ -452,9 +550,8 @@ fn report(game: &RunningGame, status: std::process::ExitStatus) -> CrashReport {
         .map(|t| t.iter().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     CrashReport {
-        code: status
-            .code()
-            .map_or_else(|| "?".to_owned(), |c| c.to_string()),
+        code: exit_code(status),
+        hint: status.code().and_then(load_failure).map(|(_, key)| key),
         lines: lines[lines.len().saturating_sub(overlay::TAIL_LINES)..].to_vec(),
         log: game.log.clone(),
     }
@@ -564,6 +661,7 @@ impl App {
         for pump in game.pumps.drain(..) {
             let _ = pump.join();
         }
+        log_exit(&game, status);
         let home = self.home.as_path();
         if let Some(instance) = instances::find(home, &game.instance) {
             shared::collect_options(home, &instance);
@@ -597,7 +695,12 @@ impl App {
             return;
         }
         let keep_open = Settings::load(&self.home).keep_open;
-        match spawn_game(&request, self.validation, &self.home) {
+        // Read before the window (and with it the renderer) closes for the game.
+        let gpu = self.state.as_ref().map(|s| Gpu {
+            info: s.renderer.device_info().clone(),
+            loader: s.renderer.loader_version(),
+        });
+        match spawn_game(&request, self.validation, &self.home, gpu.as_ref()) {
             Ok(game) => {
                 self.game = Some(game);
                 if !keep_open {
@@ -834,4 +937,19 @@ pub fn run(validation: bool) -> anyhow::Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::os::windows::process::ExitStatusExt;
+
+    #[test]
+    fn windows_load_failures_are_named() {
+        let status = std::process::ExitStatus::from_raw(0xC000_0139);
+        assert_eq!(exit_code(status), "0xC0000139");
+        assert_eq!(status.code().and_then(load_failure).map(|(name, _)| name), Some("STATUS_ENTRYPOINT_NOT_FOUND"));
+        assert_eq!(exit_code(std::process::ExitStatus::from_raw(1)), "1");
+        assert_eq!(load_failure(1), None);
+    }
 }
