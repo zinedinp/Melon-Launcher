@@ -380,6 +380,13 @@ fn spawn_game(request: &PlayRequest, validation: bool, home: &Path) -> Result<Ru
     let log = logs.join("latest.log");
     let file = Arc::new(Mutex::new(std::fs::File::create(&log).map_err(io)?));
 
+    // The game and java.exe are console programs: without this, Windows opens a console for them.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -1,6 +1,6 @@
 [package]
 name = "melon-launcher"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.100.0"
 description = "Melon launcher, versioned independently of the game client"
@@ -45,6 +45,3 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 
-# Local development against the client checkout; remove before committing.
-[patch."https://github.com/zinedinp/Melon-Client"]
-melon-base = { path = "../Melon-Client/crates/melon-base" }
