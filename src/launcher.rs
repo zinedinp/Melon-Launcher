@@ -217,7 +217,24 @@ impl RunningState {
                     Some(found) if found.asset_index.is_some() => {
                         prepare::extract_into(found, &extract, &log)
                     }
-                    Some(found) => prepare::from_path(&found.jar, &extract, &log),
+                    // A jar with no asset index beside it: the index and its
+                    // objects from Mojang into the cache (only what is
+                    // missing), as `from_local` does. The jar alone has 1x1
+                    // placeholder panoramas and lacks most sounds.
+                    // TODO: `prepare::from_path_in` once melon-base is bumped.
+                    Some(found) => match prepare::download::fetch(&home, Some(&found), &log) {
+                        Ok(fetched) => prepare::extract_into(fetched, &extract, &log),
+                        Err(e) => {
+                            log(prepare::Progress {
+                                done: 0,
+                                total: 3,
+                                message: format!(
+                                    "No asset index ({e}): the panorama and most sounds will be missing."
+                                ),
+                            });
+                            prepare::from_path(&found.jar, &extract, &log)
+                        }
+                    },
                     None => prepare::from_local(&home, &extract, &log),
                 }?;
             }
