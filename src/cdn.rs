@@ -11,7 +11,7 @@ pub const ORIGIN: &str = "https://elbengeist.moe/melonmc/cdn";
 
 /// The key the official CDN's catalog and hashes are signed with (`sign-cdn.py` next to
 /// `build-dist.sh` on the build server), minisign's base64 form.
-pub const OFFICIAL_KEY: &str = "@OFFICIAL_KEY@";
+pub const OFFICIAL_KEY: &str = "RWSCE+X5fx1YD2Mv24ADsR2feosIbndDGzHiX9pX1GlhbkHpf3vU05tc";
 
 /// Where the catalog and the binaries come from, and the key that has to vouch for them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -383,6 +383,13 @@ pub(crate) mod tests {
         };
         assert_eq!(cdn.verify(b"Melon CDN test vector\n", PY_SIGNATURE), Ok(()));
         assert!(cdn.verify(b"Melon CDN test vector!\n", PY_SIGNATURE).is_err());
+    }
+
+    #[test]
+    fn the_official_key_verifies_the_build_servers_key() {
+        let signature = "untrusted comment: signature from the Melon CDN key\nRUSCE+X5fx1YD4W+hKyo0CESUO6XrDaFn6zQRKbnJ/EwsdF0oTIKCSytLNkMmw/QeP7pU0CCzU7zbBSOVLPO+NrE5emnPMhvxwo=\ntrusted comment: timestamp:1795465221\tfile:tmp.FrDr40YlgW\thashed\neiR/T06N6LTEVA7wwZuaBxjyU4xFeqn9kR2Hb503ncUDHYMVCF3CKjYJARK3ylQ5/ohC4Hebsuuarq6evKh1Ag==\n";
+        assert_eq!(key_line(OFFICIAL_KEY), Some(OFFICIAL_KEY));
+        assert_eq!(Cdn::official().verify(b"real key check\n", signature), Ok(()));
     }
 
     #[test]
