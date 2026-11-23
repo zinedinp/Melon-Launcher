@@ -46,6 +46,12 @@ pub struct Settings {
     /// The first-run setup is still to be finished or skipped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub welcome: bool,
+    /// Another CDN (a mirror, a fork's); the official one when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdn_origin: Option<String>,
+    /// The minisign public key that CDN signs with; the official key when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cdn_public_key: Option<String>,
 }
 
 impl Settings {

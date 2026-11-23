@@ -933,6 +933,7 @@ pub fn run(validation: bool) -> anyhow::Result<()> {
     }
     let client_id = auth::microsoft_client_id(&home);
 
+    cdn::configure(cdn::Cdn::from_settings(&Settings::load(&home)));
     catalog::load(&home);
     let (catalog_tx, catalog_rx) = mpsc::channel();
     let home_bg = home.clone();

@@ -1,11 +1,96 @@
 //! Where published Melon binaries live on the CDN and on disk.
 
+use crate::store::settings::Settings;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
-/// CDN origin, no trailing slash.
+/// The official CDN origin, no trailing slash.
 pub const ORIGIN: &str = "https://elbengeist.moe/melonmc/cdn";
+
+/// The key the official CDN's catalog and hashes are signed with (`sign-cdn.py` next to
+/// `build-dist.sh` on the build server), minisign's base64 form.
+pub const OFFICIAL_KEY: &str = "@OFFICIAL_KEY@";
+
+/// Where the catalog and the binaries come from, and the key that has to vouch for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cdn {
+    /// No trailing slash.
+    pub origin: String,
+    key: String,
+}
+
+impl Cdn {
+    pub fn official() -> Self {
+        Self {
+            origin: ORIGIN.to_owned(),
+            key: OFFICIAL_KEY.to_owned(),
+        }
+    }
+
+    /// The address and key `settings` set, the official ones where they set none.
+    pub fn from_settings(settings: &Settings) -> Self {
+        let set = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        let official = Self::official();
+        Self {
+            origin: set(&settings.cdn_origin)
+                .map(|origin| origin.trim_end_matches('/').to_owned())
+                .unwrap_or(official.origin),
+            key: set(&settings.cdn_public_key)
+                .and_then(|key| key_line(&key).map(str::to_owned))
+                .unwrap_or(official.key),
+        }
+    }
+
+    /// Checks that `signature` (a `.minisig` file's text) signs `data` with this CDN's key.
+    pub fn verify(&self, data: &[u8], signature: &str) -> Result<(), String> {
+        let key = minisign_verify::PublicKey::from_base64(&self.key)
+            .map_err(|e| format!("CDN public key: {e}"))?;
+        let signature =
+            minisign_verify::Signature::decode(signature).map_err(|e| format!("signature: {e}"))?;
+        key.verify(data, &signature, false)
+            .map_err(|e| format!("signature: {e}"))
+    }
+}
+
+/// The base64 line of a minisign public key: the line itself, or the last line of a
+/// `.pub` file's text.
+pub fn key_line(text: &str) -> Option<&str> {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty() && !line.starts_with("untrusted comment:"))?;
+    minisign_verify::PublicKey::from_base64(line)
+        .is_ok()
+        .then_some(line)
+}
+
+fn current_slot() -> &'static RwLock<Option<Cdn>> {
+    static CURRENT: RwLock<Option<Cdn>> = RwLock::new(None);
+    &CURRENT
+}
+
+/// Sets the CDN for this run; the official one until this is called.
+pub fn configure(cdn: Cdn) {
+    if let Ok(mut slot) = current_slot().write() {
+        *slot = Some(cdn);
+    }
+}
+
+pub fn current() -> Cdn {
+    current_slot()
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(Cdn::official)
+}
 
 const UA: &str = concat!(
     "Melon/",
@@ -39,8 +124,8 @@ pub fn game_bin() -> &'static str {
 }
 
 /// Directory of a game version: `…/cdn/game/<version>/<os-arch>/`.
-pub fn game_url_for(version: &str) -> String {
-    format!("{ORIGIN}/game/{version}/{}/", platform_folder())
+pub fn game_url_for(cdn: &Cdn, version: &str) -> String {
+    format!("{}/game/{version}/{}/", cdn.origin, platform_folder())
 }
 
 /// Where downloaded game clients live: `<melon folder>/versions/`.
@@ -96,7 +181,8 @@ impl Progress {
     }
 }
 
-/// Fetches the game client of `version` into `versions/<version>/` and verifies its SHA-256.
+/// Fetches the game client of `version` into `versions/<version>/` and verifies its SHA-256:
+/// the signed catalog's, else a `.sha256` file that carries its own signature.
 pub fn fetch_game(
     home: &Path,
     version: &str,
@@ -106,16 +192,19 @@ pub fn fetch_game(
         return Err(format!("bad version {version}"));
     }
     let dest = game_path(home, version);
-    let folder = game_url_for(version);
+    let cdn = current();
+    let folder = game_url_for(&cdn, version);
     let sha_url = format!("{}{}.sha256", folder, game_bin());
     let bin_url = format!("{}{}", folder, game_bin());
     let expected = if let Some(hash) = crate::catalog::game_sha(version, platform_folder()) {
         hash
     } else {
         progress(Progress::line(format!("GET {sha_url}")));
-        fetch_text(&sha_url).and_then(|text| {
-            parse_sha256_line(&text).ok_or_else(|| "sha256 file is not a hash".into())
-        })?
+        let text = fetch_text(&sha_url)?;
+        let signature = fetch_text(&format!("{sha_url}.minisig"))?;
+        cdn.verify(text.as_bytes(), &signature)
+            .map_err(|e| format!("{sha_url}: {e}"))?;
+        parse_sha256_line(&text).ok_or("sha256 file is not a hash")?
     };
     if dest.is_file()
         && let Some(have) = sha256_file(&dest)
@@ -250,4 +339,78 @@ fn format_progress(done: u64, total: Option<u64>) -> String {
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A throwaway key pair, and `data` signed with it the way `minisign` does.
+    pub(crate) struct TestKey {
+        pair: minisign::KeyPair,
+    }
+
+    impl TestKey {
+        pub(crate) fn new() -> Self {
+            Self {
+                pair: minisign::KeyPair::generate_unencrypted_keypair().unwrap(),
+            }
+        }
+
+        pub(crate) fn cdn(&self) -> Cdn {
+            Cdn {
+                origin: "https://cdn.test".into(),
+                key: self.pair.pk.to_base64(),
+            }
+        }
+
+        pub(crate) fn sign(&self, data: &[u8]) -> String {
+            minisign::sign(None, &self.pair.sk, data, None, None)
+                .unwrap()
+                .into_string()
+        }
+    }
+
+    /// Made by `sign-cdn.py` (keygen, then `sign vector.txt`) with a throwaway key.
+    const PY_KEY: &str = "untrusted comment: minisign public key E8F5E3E73FE7EE96\nRWSW7uc/5+P16FqowlsinQ4Bhm4r35JRvT8wuB2yBhm+LjpnftEX1rmH\n";
+    const PY_SIGNATURE: &str = "untrusted comment: signature from the Melon CDN key\nRUSW7uc/5+P16Os4MgpmOi165BeeWXr151PGMzvmz0nyU1LYSQsOwar5053AeNNNbGEFAA5/2p/Ol7yg8LqXu4rqiFysz8KT1ws=\ntrusted comment: timestamp:1795465083\tfile:vector.txt\thashed\nUeUkk+Nsp2cyOJH4FuFFELjaOwKucWm9rT2gix4gpjfmcfpFz9hdTMlG9ZHs2ANAC/vAGxLXaONzuMrEXm4uDQ==\n";
+
+    #[test]
+    fn the_build_servers_signatures_verify() {
+        let cdn = Cdn {
+            origin: ORIGIN.into(),
+            key: key_line(PY_KEY).unwrap().into(),
+        };
+        assert_eq!(cdn.verify(b"Melon CDN test vector\n", PY_SIGNATURE), Ok(()));
+        assert!(cdn.verify(b"Melon CDN test vector!\n", PY_SIGNATURE).is_err());
+    }
+
+    #[test]
+    fn a_signature_holds_only_for_its_data_and_its_key() {
+        let key = TestKey::new();
+        let signature = key.sign(b"{\"latest\":{}}");
+        assert_eq!(key.cdn().verify(b"{\"latest\":{}}", &signature), Ok(()));
+        assert!(key.cdn().verify(b"{\"latest\":{ }}", &signature).is_err());
+        assert!(TestKey::new().cdn().verify(b"{\"latest\":{}}", &signature).is_err());
+        assert!(key.cdn().verify(b"{\"latest\":{}}", "not a signature").is_err());
+    }
+
+    #[test]
+    fn the_settings_pick_the_cdn_and_its_key() {
+        assert_eq!(Cdn::from_settings(&Settings::default()), Cdn::official());
+        let key = TestKey::new();
+        let file = key.pair.pk.to_box().unwrap().into_string();
+        let custom = Cdn::from_settings(&Settings {
+            cdn_origin: Some(" https://mirror.test/cdn/ ".into()),
+            cdn_public_key: Some(file),
+            ..Settings::default()
+        });
+        assert_eq!(custom.origin, "https://mirror.test/cdn");
+        assert_eq!(custom, Cdn { origin: custom.origin.clone(), ..key.cdn() });
+        let bad_key = Cdn::from_settings(&Settings {
+            cdn_public_key: Some("not a key".into()),
+            ..Settings::default()
+        });
+        assert_eq!(bad_key.key, OFFICIAL_KEY, "an unreadable key falls back to the official one");
+    }
 }

@@ -47,6 +47,8 @@ pub struct SettingsMenu {
     tab: Tab,
     jvm_args: TextField,
     assets_path: TextField,
+    cdn_origin: TextField,
+    cdn_key: TextField,
     /// The client jar assets are extracted from.
     pub jar: JarSource,
     /// What cleaning up found; `None` before the first look.
@@ -62,10 +64,16 @@ impl SettingsMenu {
         jvm_args.set_value(settings.jvm_args.as_deref().unwrap_or(""));
         let mut assets_path = TextField::new(String::new());
         assets_path.set_value(&settings.assets_dir(home).display().to_string());
+        let mut cdn_origin = TextField::new(cdn::ORIGIN);
+        cdn_origin.set_value(settings.cdn_origin.as_deref().unwrap_or(""));
+        let mut cdn_key = TextField::new(String::new());
+        cdn_key.set_value(settings.cdn_public_key.as_deref().unwrap_or(""));
         Self {
             tab: Tab::General,
             jvm_args,
             assets_path,
+            cdn_origin,
+            cdn_key,
             jar: JarSource::scan(home),
             found_items: None,
             scan_rx: None,
@@ -480,6 +488,34 @@ impl Shell {
             self.save_settings();
         }
         y += ROW - 6.0;
-        cx.paragraph(cx.t("advanced.probe_note"), x, y + 2.0, w - 30.0, theme::DIM);
+        y += cx.paragraph(cx.t("advanced.probe_note"), x, y + 2.0, w - 30.0, theme::DIM) + 12.0;
+
+        y = cx.section(cx.t("advanced.cdn"), x, y, w);
+        let mut edit = std::mem::replace(&mut self.settings_menu.cdn_origin, TextField::new(""));
+        if cx.field(&mut edit, Rect::new(x + 1.0, y + 1.0, w - 2.0, 16.0)).changed {
+            self.settings.cdn_origin = Some(edit.value().trim().to_owned()).filter(|v| !v.is_empty());
+            self.save_settings();
+        }
+        self.settings_menu.cdn_origin = edit;
+        y += 24.0;
+        cx.label(cx.t("advanced.cdn_key"), x, y, w, theme::TEXT);
+        y += 14.0;
+        let mut edit = std::mem::replace(&mut self.settings_menu.cdn_key, TextField::new(""));
+        if cx.field(&mut edit, Rect::new(x + 1.0, y + 1.0, w - 2.0, 16.0)).changed {
+            self.settings.cdn_public_key =
+                Some(edit.value().trim().to_owned()).filter(|v| !v.is_empty());
+            self.save_settings();
+        }
+        let bad_key = self
+            .settings
+            .cdn_public_key
+            .as_deref()
+            .is_some_and(|key| cdn::key_line(key).is_none());
+        self.settings_menu.cdn_key = edit;
+        y += 22.0;
+        if bad_key {
+            y += cx.paragraph(cx.t("advanced.cdn_key_bad"), x, y, w, theme::DANGER) + 4.0;
+        }
+        cx.paragraph(cx.t("advanced.cdn_note"), x, y, w, theme::DIM);
     }
 }

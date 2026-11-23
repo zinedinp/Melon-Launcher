@@ -1,13 +1,14 @@
-//! The release catalog (`discover.json` on the CDN): fetched at run time, never baked in.
+//! The release catalog (`discover.json` on the CDN): fetched at run time, never baked in, and
+//! only taken with a valid signature (`discover.json.minisig`) by the CDN's key.
 
-use crate::cdn::{ORIGIN, fetch_text, hex, parse_sha256_line};
+use crate::cdn::{self, Cdn, fetch_text};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const CACHE: &str = "discover.json";
+const CACHE_SIGNATURE: &str = "discover.json.minisig";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Catalog {
@@ -128,16 +129,18 @@ fn cache_path(home: &Path) -> PathBuf {
     home.join(CACHE)
 }
 
-fn cache_bytes(home: &Path) -> Option<Vec<u8>> {
+/// The cached catalog and its signature, if `cdn`'s key signed it.
+fn cached(home: &Path, cdn: &Cdn) -> Option<(Catalog, String)> {
     let bytes = std::fs::read(cache_path(home)).ok()?;
-    parse_bytes(&bytes).ok()?;
-    Some(bytes)
+    let signature = std::fs::read_to_string(home.join(CACHE_SIGNATURE)).ok()?;
+    cdn.verify(&bytes, &signature).ok()?;
+    Some((parse_bytes(&bytes).ok()?, signature))
 }
 
-/// Loads the cached catalog, if an earlier run saved one.
+/// Loads the cached catalog, if an earlier run saved one the CDN's key signed.
 pub fn load(home: &Path) {
-    match cache_bytes(home).and_then(|bytes| parse_bytes(&bytes).ok()) {
-        Some(catalog) => set(catalog, Source::Cache),
+    match cached(home, &cdn::current()) {
+        Some((catalog, _)) => set(catalog, Source::Cache),
         None => set(Catalog::default(), Source::None),
     }
 }
@@ -150,24 +153,22 @@ pub fn refresh(home: &Path) {
     }
 }
 
+/// The signature first: when it is the cached one, the cached catalog is current.
 fn try_refresh(home: &Path) -> Result<Catalog, String> {
-    let local = cache_bytes(home);
-    let sha_url = format!("{ORIGIN}/discover.json.sha256");
-    let remote_hash = fetch_text(&sha_url).and_then(|text| {
-        parse_sha256_line(&text).ok_or_else(|| "discover.json.sha256 is not a hash".into())
-    })?;
-    if let Some(local) = &local
-        && sha256_bytes(local) == remote_hash
+    let cdn = cdn::current();
+    let signature = fetch_text(&format!("{}/{CACHE_SIGNATURE}", cdn.origin))?;
+    if let Some((catalog, cached_signature)) = cached(home, &cdn)
+        && cached_signature == signature
     {
-        return parse_bytes(local);
+        return Ok(catalog);
     }
-    let body = fetch_text(&format!("{ORIGIN}/discover.json"))?;
-    let have = sha256_bytes(body.as_bytes());
-    if have != remote_hash {
-        return Err(format!("discover.json sha256 mismatch (got {have})"));
-    }
+    let body = fetch_text(&format!("{}/{CACHE}", cdn.origin))?;
+    cdn.verify(body.as_bytes(), &signature)
+        .map_err(|e| format!("discover.json: {e}"))?;
     let catalog = parse_bytes(body.as_bytes())?;
-    if let Err(e) = std::fs::write(cache_path(home), body.as_bytes()) {
+    let saved = std::fs::write(cache_path(home), body.as_bytes())
+        .and_then(|()| std::fs::write(home.join(CACHE_SIGNATURE), &signature));
+    if let Err(e) = saved {
         eprintln!("discover.json not saved: {e}");
     }
     Ok(catalog)
@@ -176,12 +177,6 @@ fn try_refresh(home: &Path) -> Result<Catalog, String> {
 fn parse_bytes(bytes: &[u8]) -> Result<Catalog, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
     serde_json::from_str(text).map_err(|e| e.to_string())
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex(hasher.finalize().as_ref())
 }
 
 #[cfg(test)]
@@ -194,6 +189,21 @@ mod tests {
         assert_eq!(compare_versions("0.10.0+mc26.3", "0.9.7+mc26.3"), Ordering::Greater);
         assert_eq!(compare_versions("0.7.5", "0.7.6"), Ordering::Less);
         assert_eq!(compare_versions("0.1.1", "0.1.1"), Ordering::Equal);
+    }
+
+    #[test]
+    fn only_a_cache_the_cdn_key_signed_is_used() {
+        let home = crate::store::scratch("catalog-cache");
+        let key = crate::cdn::tests::TestKey::new();
+        let body = br#"{"latest":{"game":"0.7.6+mc26.3","launcher":""}}"#;
+        std::fs::write(cache_path(&home), body).unwrap();
+        std::fs::write(home.join(CACHE_SIGNATURE), key.sign(body)).unwrap();
+        let (catalog, _) = cached(&home, &key.cdn()).expect("signed cache");
+        assert_eq!(catalog.latest.game, "0.7.6+mc26.3");
+        assert!(cached(&home, &crate::cdn::tests::TestKey::new().cdn()).is_none());
+        std::fs::write(cache_path(&home), br#"{"latest":{"game":"9.9.9","launcher":""}}"#).unwrap();
+        assert!(cached(&home, &key.cdn()).is_none(), "an edited cache is refused");
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
