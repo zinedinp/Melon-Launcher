@@ -247,19 +247,18 @@ pub fn command(
     }
     jvm_list.extend(list(&arguments["jvm"], os));
     game.extend(list(&arguments["game"], os));
-    if let Some(server) = join {
-        if !game
+    if let Some(server) = join
+        && !game
             .iter()
             .any(|a| a == "--server" || a.contains("quickPlayMultiplayer"))
-        {
-            let (host, port) = host_and_port(server);
-            game.extend([
-                "--server".into(),
-                host.into(),
-                "--port".into(),
-                port.to_string(),
-            ]);
-        }
+    {
+        let (host, port) = host_and_port(server);
+        game.extend([
+            "--server".into(),
+            host.into(),
+            "--port".into(),
+            port.to_string(),
+        ]);
     }
     jvm.extend(jvm_list.iter().map(|a| fill(a, &vars)));
     if !jvm.iter().any(|a| a == "-cp" || a.starts_with("-cp")) {

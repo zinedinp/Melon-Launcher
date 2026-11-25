@@ -151,7 +151,7 @@ impl<'a> Painter<'a> {
                 let v0 = (row * CELL) as f32 / ATLAS as f32;
                 let uv = [u0, v0, u0 + width / ATLAS as f32, v0 + 8.0 / ATLAS as f32];
                 self.list
-                    .push_rect(self.textures.font, pen, y, width, 8.0, uv, color);
+                    .push_rect(self.textures.font, [pen, y, width, 8.0], uv, color);
             }
             pen += advance(c);
         }
