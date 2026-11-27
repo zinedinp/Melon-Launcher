@@ -69,10 +69,12 @@ impl Progress {
 
     /// Draws the popup. True when its Close button was pressed.
     ///
-    /// It grows with the error and shrinks to the window: the log gives up rows first, then
-    /// the error is cut. Nothing is drawn outside it; Copy takes the whole text.
+    /// Long lines, URLs most of all, spill onto new rows. It grows with the error and shrinks
+    /// to the window: the log gives up its oldest rows first, then the error is cut. Nothing
+    /// is drawn outside it; Copy takes the whole text.
     pub fn frame(&self, cx: &mut Cx) -> bool {
         let w = PANEL_W.min(cx.width() - 16.0) - PAD * 2.0;
+        let log: Vec<String> = self.lines.iter().flat_map(|line| cx.ui.wrap_path(line, w / SMALL)).collect();
         let error_lines = self.error.as_deref().map(|e| cx.ui.wrap(e, w / SMALL)).unwrap_or_default();
         let error_step = LINE * SMALL;
         let foot = |error_rows: usize| match self.error {
@@ -93,12 +95,9 @@ impl Progress {
         cx.clip(rect);
         cx.label(&self.title, x, y, w, theme::TEXT);
         y += LINE + GAP;
-        let shown = &self.lines[self.lines.len().saturating_sub(log_rows)..];
+        let shown = &log[log.len().saturating_sub(log_rows)..];
         for (i, line) in shown.iter().enumerate() {
-            let line_y = y + i as f32 * LINE;
-            if cx.small_path(line, x, line_y, w, theme::DIM) {
-                cx.tooltip(Rect::new(x, line_y, w, LINE), line);
-            }
+            cx.small(line, x, y + i as f32 * LINE, theme::DIM);
         }
         y += log_rows as f32 * LINE + GAP;
         let Some(error) = &self.error else {

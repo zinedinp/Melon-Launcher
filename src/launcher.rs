@@ -390,12 +390,17 @@ fn system_lines(instance: &Instance, gpu: Option<&Gpu>) -> Vec<String> {
     }
     lines.push(format!("Runtimes: {}", sysinfo::runtimes()));
     let engine = if instance.is_java() { "Java Edition" } else { "Melon" };
-    let version = instance.version.as_deref().unwrap_or("latest");
+    let version = if instance.is_java() {
+        instance.java_version.as_deref().unwrap_or(home::VERSION)
+    } else {
+        instance.version.as_deref().unwrap_or("latest")
+    };
     lines.push(format!("Instance: {engine}, version {version}"));
     lines
 }
 
-/// Starts the game. Its output is copied to the terminal, `logs/latest.log` and a tail.
+/// Starts the game. Its output is copied to the terminal, a log and a tail: `logs/latest.log`
+/// for Melon, `logs/launcher.log` for Java, whose game writes `latest.log` itself.
 fn spawn_game(
     request: &PlayRequest,
     validation: bool,
@@ -443,7 +448,7 @@ fn spawn_game(
     let io = |e: std::io::Error| e.to_string();
     let logs = instance.path.join("logs");
     std::fs::create_dir_all(&logs).map_err(io)?;
-    let log = logs.join("latest.log");
+    let log = logs.join(if instance.is_java() { "launcher.log" } else { "latest.log" });
     let file = Arc::new(Mutex::new(std::fs::File::create(&log).map_err(io)?));
     for line in system_lines(&instance, gpu) {
         log_line(&file, &line);
@@ -572,7 +577,11 @@ fn report(game: &RunningGame, status: std::process::ExitStatus) -> CrashReport {
     CrashReport {
         code: exit_code(status),
         hint: status.code().and_then(load_failure).map(|(_, key)| key),
-        lines: lines[lines.len().saturating_sub(overlay::TAIL_LINES)..].to_vec(),
+        // The font has no tab: stack traces indent with them.
+        lines: lines[lines.len().saturating_sub(overlay::TAIL_LINES)..]
+            .iter()
+            .map(|line| line.replace('\t', "    "))
+            .collect(),
         log: game.log.clone(),
     }
 }
@@ -812,7 +821,7 @@ impl App {
             Choice::Close => state.crash = None,
             Choice::OpenLog => {
                 if let Some(crash) = &state.crash
-                    && let Err(e) = open::that(&crash.log)
+                    && let Err(e) = open::that_detached(&crash.log)
                 {
                     eprintln!("the log could not be opened: {e}");
                 }

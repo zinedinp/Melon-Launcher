@@ -1,6 +1,6 @@
 [package]
 name = "melon-launcher"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 rust-version = "1.100.0"
 description = "Melon launcher, versioned independently of the game client"
@@ -18,7 +18,7 @@ melon-base = { git = "https://github.com/zinedinp/Melon-Client", branch = "main"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha2 = "0.11.1"
+sha2 = "0.11.2"
 winit = "0.30.13"
 zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
 open = "5.4.5"

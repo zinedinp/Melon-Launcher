@@ -68,6 +68,12 @@ pub struct Ready {
     pub minecraft: PathBuf,
 }
 
+/// The version file is `version`'s own, or a loader profile on top of it.
+fn is_version(json: &Path, version: &str) -> bool {
+    read_json(json).is_ok_and(|file| file["id"] == version || file["inheritsFrom"] == version)
+}
+
+/// The instance's client jar with its version file, here or in another launcher's folder.
 pub fn locate(home: &Path, instance: &Instance) -> Option<Ready> {
     let version = instance.java_version.as_deref().unwrap_or(home::VERSION);
     let cache = home::minecraft_cache(home);
@@ -92,7 +98,8 @@ pub fn locate(home: &Path, instance: &Instance) -> Option<Ready> {
         } else {
             jar.parent()?.join(format!("{version}.json"))
         };
-        if !json.is_file() {
+        // Another launcher's newest client is no stand-in for the version the instance names.
+        if !json.is_file() || !is_version(&json, version) {
             continue;
         }
         let minecraft = jar
@@ -111,7 +118,20 @@ pub fn locate(home: &Path, instance: &Instance) -> Option<Ready> {
     None
 }
 
-/// Copy or extract this version's assets into `assets_dir` before launch.
+/// The Mojang `assets` folder beside the client, when it holds the version's index: the
+/// game finds its sounds and languages there.
+fn mojang_assets(ready: &Ready, version: &Value) -> Option<PathBuf> {
+    let index = version["assetIndex"]["id"].as_str()?;
+    let assets = ready.minecraft.join("assets");
+    assets
+        .join("indexes")
+        .join(format!("{index}.json"))
+        .is_file()
+        .then_some(assets)
+}
+
+/// Extracts this version's assets from the jar into `assets_dir` before launch, unless the
+/// client's own Mojang assets are there.
 pub fn prepare_assets(
     home: &Path,
     instance: &Instance,
@@ -134,6 +154,11 @@ pub fn prepare_assets(
             "No Java {version} jar for this instance. Put {version}.jar in the instance folder."
         )
     })?;
+    let file = resolve(read_json(&found.json)?, &found.minecraft)?;
+    if let Some(assets) = mojang_assets(&found, &file) {
+        log(format!("Using the Mojang assets in {}", assets.display()));
+        return Ok(());
+    }
     log(format!(
         "Extracting {} into {}",
         found.jar.display(),
@@ -174,7 +199,7 @@ pub fn command(
     let assets = if instance.mojang_java {
         ready.minecraft.join("assets")
     } else {
-        assets_dir.join(id)
+        mojang_assets(&ready, &version).unwrap_or_else(|| assets_dir.join(id))
     };
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let vars: HashMap<&str, String> = HashMap::from([
@@ -245,8 +270,11 @@ pub fn command(
         );
         game.extend(line.split_whitespace().map(String::from));
     }
-    jvm_list.extend(list(&arguments["jvm"], os));
-    game.extend(list(&arguments["game"], os));
+    let features = Features {
+        quick_play_multiplayer: join.is_some(),
+    };
+    jvm_list.extend(list(&arguments["jvm"], os, features));
+    game.extend(list(&arguments["game"], os, features));
     if let Some(server) = join
         && !game
             .iter()
@@ -304,15 +332,44 @@ fn safe_rel(rel: &str) -> Result<&str, String> {
     Ok(rel)
 }
 
-fn allowed(rules: &Value, os: &str) -> bool {
+/// The launcher features a version file's rules ask about. Only joining a server is ever on:
+/// no demo, no custom window size, no quick play other than multiplayer.
+#[derive(Clone, Copy, Default)]
+struct Features {
+    quick_play_multiplayer: bool,
+}
+
+impl Features {
+    fn has(self, name: &str) -> bool {
+        name == "is_quick_play_multiplayer" && self.quick_play_multiplayer
+    }
+}
+
+/// `os.arch` of a rule: Mojang's `x86` means a 32-bit x86 runtime.
+fn arch_matches(arch: &str) -> bool {
+    match arch {
+        "x86" => cfg!(target_arch = "x86"),
+        "x86_64" => cfg!(target_arch = "x86_64"),
+        "arm64" | "aarch64" => cfg!(target_arch = "aarch64"),
+        _ => false,
+    }
+}
+
+/// A version file's `rules`: the last rule whose OS name, CPU and features all match decides;
+/// none matching disallows. `os.version` patterns are taken as matching.
+fn allowed(rules: &Value, os: &str, features: Features) -> bool {
     let Some(rules) = rules.as_array() else {
         return true;
     };
     let mut allow = false;
     for rule in rules {
         let system = &rule["os"];
-        let matches = system["name"].as_str().is_none_or(|n| n == os);
-        if matches {
+        let os_matches = system["name"].as_str().is_none_or(|name| name == os)
+            && system["arch"].as_str().is_none_or(arch_matches);
+        let features_match = rule["features"]
+            .as_object()
+            .is_none_or(|wanted| wanted.iter().all(|(name, on)| on.as_bool() == Some(features.has(name))));
+        if os_matches && features_match {
             allow = rule["action"] == "allow";
         }
     }
@@ -398,7 +455,7 @@ fn classpath(version: &Value, minecraft: &Path, os: &str) -> Result<Vec<PathBuf>
     let jar = version["jar"].as_str().unwrap_or(id);
     let mut paths: Vec<PathBuf> = Vec::new();
     for library in version["libraries"].as_array().into_iter().flatten() {
-        if !allowed(&library["rules"], os) {
+        if !allowed(&library["rules"], os, Features::default()) {
             continue;
         }
         if let Some(rel) = library["downloads"]["artifact"]["path"].as_str() {
@@ -420,7 +477,7 @@ fn classpath(version: &Value, minecraft: &Path, os: &str) -> Result<Vec<PathBuf>
 fn unpack_natives(version: &Value, minecraft: &Path, os: &str, to: &Path) -> Result<(), String> {
     let mut any = false;
     for library in version["libraries"].as_array().into_iter().flatten() {
-        if !allowed(&library["rules"], os) {
+        if !allowed(&library["rules"], os, Features::default()) {
             continue;
         }
         let Some(natives) = library["natives"][os].as_str() else {
@@ -465,12 +522,12 @@ fn unpack_natives(version: &Value, minecraft: &Path, os: &str, to: &Path) -> Res
     Ok(())
 }
 
-fn list(args: &Value, os: &str) -> Vec<String> {
+fn list(args: &Value, os: &str, features: Features) -> Vec<String> {
     let mut out = Vec::new();
     for arg in args.as_array().into_iter().flatten() {
         match arg {
             Value::String(s) => out.push(s.clone()),
-            Value::Object(o) if allowed(&o["rules"], os) => match &o["value"] {
+            Value::Object(o) if allowed(&o["rules"], os, features) => match &o["value"] {
                 Value::String(s) => out.push(s.clone()),
                 Value::Array(values) => {
                     out.extend(values.iter().filter_map(Value::as_str).map(String::from))
@@ -500,4 +557,102 @@ fn fill(arg: &str, vars: &HashMap<&str, String>) -> String {
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rule-bound arguments of a current version file (26.2).
+    fn arguments() -> Value {
+        serde_json::json!({
+            "game": [
+                "--username", "${auth_player_name}",
+                {"rules": [{"action": "allow", "features": {"is_demo_user": true}}], "value": "--demo"},
+                {"rules": [{"action": "allow", "features": {"has_custom_resolution": true}}],
+                 "value": ["--width", "${resolution_width}", "--height", "${resolution_height}"]},
+                {"rules": [{"action": "allow", "features": {"has_quick_plays_support": true}}],
+                 "value": ["--quickPlayPath", "${quickPlayPath}"]},
+                {"rules": [{"action": "allow", "features": {"is_quick_play_singleplayer": true}}],
+                 "value": ["--quickPlaySingleplayer", "${quickPlaySingleplayer}"]},
+                {"rules": [{"action": "allow", "features": {"is_quick_play_multiplayer": true}}],
+                 "value": ["--quickPlayMultiplayer", "${quickPlayMultiplayer}"]},
+                {"rules": [{"action": "allow", "features": {"is_quick_play_realms": true}}],
+                 "value": ["--quickPlayRealms", "${quickPlayRealms}"]}
+            ],
+            "jvm": [
+                {"rules": [{"action": "allow", "os": {"name": "osx"}}], "value": ["-XstartOnFirstThread"]},
+                {"rules": [{"action": "allow", "os": {"name": "windows"}}], "value": "-XX:HeapDumpPath=dump"},
+                {"rules": [{"action": "allow", "os": {"arch": "x86"}}], "value": "-Xss1M"},
+                "-cp", "${classpath}"
+            ]
+        })
+    }
+
+    #[test]
+    fn feature_rules_stay_off_unless_joining_a_server() {
+        let args = arguments();
+        let off = Features::default();
+        assert_eq!(list(&args["game"], "windows", off), ["--username", "${auth_player_name}"]);
+        let joining = Features {
+            quick_play_multiplayer: true,
+        };
+        assert_eq!(
+            list(&args["game"], "windows", joining),
+            ["--username", "${auth_player_name}", "--quickPlayMultiplayer", "${quickPlayMultiplayer}"]
+        );
+    }
+
+    #[test]
+    fn os_and_cpu_rules_pick_the_jvm_arguments() {
+        let jvm = list(&arguments()["jvm"], "windows", Features::default());
+        assert!(jvm.contains(&"-XX:HeapDumpPath=dump".to_owned()));
+        assert!(!jvm.contains(&"-XstartOnFirstThread".to_owned()));
+        assert_eq!(jvm.contains(&"-Xss1M".to_owned()), cfg!(target_arch = "x86"));
+        let osx = list(&arguments()["jvm"], "osx", Features::default());
+        assert!(osx.contains(&"-XstartOnFirstThread".to_owned()));
+    }
+
+    #[test]
+    fn only_the_named_version_or_a_profile_on_it_is_taken() {
+        let dir = crate::store::scratch("java-version");
+        let write = |name: &str, json: Value| {
+            let path = dir.join(name);
+            std::fs::write(&path, json.to_string()).unwrap();
+            path
+        };
+        assert!(is_version(&write("a.json", serde_json::json!({"id": "26.2"})), "26.2"));
+        assert!(!is_version(&write("b.json", serde_json::json!({"id": "26.3"})), "26.2"));
+        let profile = serde_json::json!({"id": "fabric-loader-0.17-26.2", "inheritsFrom": "26.2"});
+        assert!(is_version(&write("c.json", profile), "26.2"));
+        assert!(!is_version(&dir.join("missing.json"), "26.2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mojang_assets_are_used_when_they_hold_the_index() {
+        let minecraft = crate::store::scratch("java-assets");
+        let ready = Ready {
+            jar: minecraft.join("versions/26.3/26.3.jar"),
+            json: minecraft.join("versions/26.3/26.3.json"),
+            minecraft: minecraft.clone(),
+        };
+        let version = serde_json::json!({"assetIndex": {"id": "34"}});
+        assert_eq!(mojang_assets(&ready, &version), None);
+        std::fs::create_dir_all(minecraft.join("assets/indexes")).unwrap();
+        std::fs::write(minecraft.join("assets/indexes/34.json"), "{}").unwrap();
+        assert_eq!(mojang_assets(&ready, &version), Some(minecraft.join("assets")));
+        let _ = std::fs::remove_dir_all(minecraft);
+    }
+
+    #[test]
+    fn a_disallow_rule_after_an_allow_wins() {
+        let rules = serde_json::json!([
+            {"action": "allow"},
+            {"action": "disallow", "os": {"name": "osx"}}
+        ]);
+        assert!(allowed(&rules, "windows", Features::default()));
+        assert!(!allowed(&rules, "osx", Features::default()));
+        assert!(allowed(&Value::Null, "linux", Features::default()));
+    }
 }

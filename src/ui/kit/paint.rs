@@ -127,6 +127,37 @@ pub fn ellipsize_middle(text: &str, max_width: f32) -> String {
     out
 }
 
+/// `text` in lines at most `max_width` wide, for URLs and paths: each line as full as it
+/// gets, broken after a `/`, `\`, space, `?`, `&` or `=` when one is in its back half.
+pub fn wrap_path(text: &str, max_width: f32) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let (mut end, mut width) = (start, 0.0);
+        while end < chars.len() && (end == start || width + advance(chars[end]) <= max_width) {
+            width += advance(chars[end]);
+            end += 1;
+        }
+        if end < chars.len()
+            && let Some(cut) = (start + (end - start) / 2..end)
+                .rev()
+                .find(|&i| matches!(chars[i], '/' | '\\' | ' ' | '?' | '&' | '='))
+        {
+            end = cut + 1;
+        }
+        lines.push(chars[start..end].iter().collect::<String>().trim_end().to_owned());
+        start = end;
+        while chars.get(start) == Some(&' ') {
+            start += 1;
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 /// What a frame draws with.
 pub struct Painter<'a> {
     pub list: &'a mut DrawList,
@@ -236,6 +267,10 @@ impl<'a> Painter<'a> {
         wrap(text, max_width)
     }
 
+    pub fn wrap_path(&self, text: &str, max_width: f32) -> Vec<String> {
+        wrap_path(text, max_width)
+    }
+
     /// Clips what follows to `rect`, until [`Painter::unclip`].
     pub fn clip(&mut self, rect: Rect) {
         self.list
@@ -268,6 +303,22 @@ mod tests {
         assert!(cut.starts_with("GET ") && cut.contains("...") && cut.ends_with("melon.exe"), "{cut}");
         assert_eq!(ellipsize_middle("short", 120.0), "short");
         assert_eq!(ellipsize_middle(url, 4.0), "...");
+    }
+
+    #[test]
+    fn a_url_spills_onto_new_lines_at_its_slashes() {
+        let url = "GET https://cdn.example.org/versions/0.10.4/windows-x86_64/melon.exe";
+        let width = text_width("GET https://cdn.example.org/vers");
+        let lines = wrap_path(url, width);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert!(lines[0].starts_with("GET https://"), "GET stays with its URL: {lines:?}");
+        assert!(lines.iter().all(|line| text_width(line) <= width), "{lines:?}");
+        assert!(lines[..lines.len() - 1].iter().all(|line| line.ends_with('/')), "{lines:?}");
+        assert_eq!(lines.concat(), url);
+        assert_eq!(wrap_path("short", 100.0), ["short"]);
+        assert_eq!(wrap_path("", 100.0), [""]);
+        let no_breaks = "a".repeat(40);
+        assert!(wrap_path(&no_breaks, text_width("aaaa")).iter().all(|l| l.len() <= 4));
     }
 
     #[test]
