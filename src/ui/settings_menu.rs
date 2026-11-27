@@ -2,9 +2,10 @@
 
 use super::kit::theme;
 use super::kit::{BUTTON_H, Btn, Cx, GAP, Scroll};
-use super::shell::{Action, Purpose, Shell, Status};
+use super::shell::{Action, Purpose, Shell, Status, update_launcher};
 use crate::catalog;
 use crate::cdn;
+use crate::self_update;
 use crate::lang::LANGUAGES;
 use crate::play::Install;
 use crate::store::cleanup::{self, Item};
@@ -187,12 +188,19 @@ impl Shell {
         y += ROW + 10.0;
 
         y = cx.section(cx.t("settings.updates"), x, y, w);
-        let (text, color) = match catalog::launcher_update() {
-            Some(version) => (cx.tf("info.launcher_update", &[&version]), theme::ACCENT),
+        let update = catalog::launcher_update();
+        let (text, color) = match &update {
+            Some(version) => (cx.tf("info.launcher_update", &[version]), theme::ACCENT),
             None => (cx.tf("info.version", &[env!("CARGO_PKG_VERSION")]), theme::DIM),
         };
         cx.label(&text, x, y + 2.0, w, color);
-        // TODO: launcher self-update: download and swap the launcher binary.
+        if update.is_some() {
+            let key = if self_update::binary().is_some() { "settings.update_now" } else { "settings.update_page" };
+            let button = Rect::new(x, y + 16.0, (cx.text_width(cx.t(key)) + 16.0).min(w), BUTTON_H);
+            if cx.button(button, cx.t(key), Btn::PRIMARY) {
+                update_launcher(out);
+            }
+        }
     }
 
     fn settings_java(&mut self, cx: &mut Cx, page: Rect) {

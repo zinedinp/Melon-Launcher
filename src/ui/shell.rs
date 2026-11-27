@@ -16,6 +16,7 @@ use crate::catalog;
 use crate::cdn;
 use crate::java_play;
 use crate::play::{self, Facts, Install, PlayState};
+use crate::self_update;
 use crate::store::instances::{self, Engine, Instance};
 use crate::store::settings::Settings;
 use crate::store::{java, shared};
@@ -54,6 +55,8 @@ pub enum Action {
     Stop,
     /// Fetch assets and/or a client; `Found` is a jar the user chose for the assets.
     Install(Install, Option<Found>),
+    /// Put launcher `version` in place of this one and restart into it.
+    UpdateLauncher(String),
     /// Start the Microsoft device-code login.
     SignIn,
     LanguageChanged,
@@ -159,8 +162,64 @@ pub struct Shell {
 /// What a line in the quick bar opens when clicked.
 #[derive(Clone, Copy)]
 enum Link {
-    Url(&'static str),
     RustGuide,
+    UpdateLauncher,
+}
+
+/// A line in the quick bar.
+struct InfoLine {
+    text: String,
+    color: theme::Color,
+    link: Option<Link>,
+    tip: Option<String>,
+}
+
+impl InfoLine {
+    fn new(text: String, color: theme::Color) -> Self {
+        Self {
+            text,
+            color,
+            link: None,
+            tip: None,
+        }
+    }
+
+    fn link(mut self, link: Link) -> Self {
+        self.link = Some(link);
+        self
+    }
+
+    fn tip(mut self, tip: String) -> Self {
+        self.tip = Some(tip);
+        self
+    }
+}
+
+/// Updates the launcher in place; a build from source opens the releases page instead.
+pub(super) fn update_launcher(out: &mut Vec<Action>) {
+    match catalog::launcher_update() {
+        Some(version) if self_update::binary().is_some() => out.push(Action::UpdateLauncher(version)),
+        _ => melon_base::platform::open_url(RELEASES_URL),
+    }
+}
+
+/// The newest launcher: an update to click, or that this one is it.
+fn launcher_line(cx: &Cx) -> InfoLine {
+    let installed = env!("CARGO_PKG_VERSION");
+    if let Some(version) = catalog::launcher_update() {
+        let tip = if self_update::binary().is_some() {
+            cx.tf("info.launcher_update_tip", &[installed])
+        } else {
+            cx.t("info.launcher_source_tip").to_owned()
+        };
+        let line = InfoLine::new(cx.tf("info.launcher_update_now", &[&version]), theme::ACCENT);
+        return line.link(Link::UpdateLauncher).tip(tip);
+    }
+    let key = match catalog::latest_launcher() {
+        Some(latest) if latest == installed => "info.launcher_latest",
+        _ => "info.version",
+    };
+    InfoLine::new(cx.tf(key, &[installed]), theme::DIM)
 }
 
 impl Shell {
@@ -588,7 +647,7 @@ impl Shell {
         self.account_switcher(cx, account, status);
 
         let info = Rect::new(PAD + 2.0, 0.0, (account.x - PAD * 2.0 - 2.0).max(0.0), TOPBAR_H);
-        self.info(cx, info, status);
+        self.info(cx, info, status, out);
     }
 
     /// The selected account, with the list of accounts and the way into the account menu.
@@ -647,74 +706,83 @@ impl Shell {
         }
     }
 
-    /// The quick bar's left: what is new or wrong, most important first.
-    fn info(&mut self, cx: &mut Cx, rect: Rect, status: &Status) {
-        let mut lines: Vec<(String, theme::Color, Option<Link>)> = Vec::new();
+    /// The quick bar's left: the newest launcher, the newest Melon client below it, then the
+    /// most important of what is new or wrong.
+    fn info(&mut self, cx: &mut Cx, rect: Rect, status: &Status, out: &mut Vec<Action>) {
+        let mut lines = vec![launcher_line(cx)];
+        lines.extend(self.client_line(cx));
+        lines.extend(self.notes(cx, status).into_iter().take(1));
+        let top = rect.y + (rect.h - lines.len() as f32 * 11.0) / 2.0 + 1.0;
+        for (i, line) in lines.iter().enumerate() {
+            let y = top + i as f32 * 11.0;
+            let row = Rect::new(rect.x, y - 1.0, rect.w, 11.0);
+            let hot = line.link.is_some() && cx.hot(row);
+            if hot {
+                cx.pointer();
+            }
+            let color = if hot { theme::TEXT } else { line.color };
+            if i == 0 && cx.text_width(&line.text) <= rect.w {
+                cx.label(&line.text, rect.x, y, rect.w, color);
+            } else {
+                cx.small_label(&line.text, rect.x, y + 1.0, rect.w, color);
+            }
+            if let Some(tip) = &line.tip {
+                cx.tooltip(row, tip);
+            }
+            if let Some(link) = line.link
+                && cx.clicked(row)
+            {
+                match link {
+                    Link::RustGuide => self.rust_guide = true,
+                    Link::UpdateLauncher => update_launcher(out),
+                }
+            }
+        }
+    }
+
+    /// The newest Melon client, and whether it is downloaded; `None` while no catalog is known.
+    fn client_line(&self, cx: &Cx) -> Option<InfoLine> {
+        let latest = catalog::latest_game()?;
+        let short = latest.split('+').next().unwrap_or(&latest);
+        let (key, color) = if self.disk.installed.contains(&latest) {
+            ("info.up_to_date", theme::FAINT)
+        } else if self.disk.installed.is_empty() {
+            ("info.game_latest", theme::FAINT)
+        } else {
+            ("info.game_update", theme::ACCENT)
+        };
+        Some(InfoLine::new(cx.tf(key, &[short]), color).tip(cx.tf("info.game_tip", &[&latest])))
+    }
+
+    /// What is new or wrong, most important first.
+    fn notes(&mut self, cx: &Cx, status: &Status) -> Vec<InfoLine> {
+        let mut lines = Vec::new();
         if let Some((text, at)) = &self.notice {
             if at.elapsed() < NOTICE {
-                lines.push((text.clone(), theme::WARN, None));
+                lines.push(InfoLine::new(text.clone(), theme::WARN));
             } else {
                 self.notice = None;
             }
         }
         if let Some(id) = status.running {
             let name = self.instances.iter().find(|i| i.id == id).map_or(id, |i| i.name.as_str());
-            lines.push((cx.tf("info.running", &[name]), theme::ACCENT, None));
-        }
-        if let Some(version) = catalog::launcher_update() {
-            lines.push((cx.tf("info.launcher_update", &[&version]), theme::ACCENT, Some(Link::Url(RELEASES_URL))));
-        }
-        let latest = catalog::latest_game();
-        if let Some(latest) = &latest
-            && !self.disk.installed.is_empty()
-            && !self.disk.installed.contains(latest)
-        {
-            lines.push((cx.tf("info.game_update", &[latest]), theme::ACCENT, None));
+            lines.push(InfoLine::new(cx.tf("info.running", &[name]), theme::ACCENT));
         }
         if status.catalog_checked && catalog::source() != catalog::Source::Online {
             let key = match catalog::source() {
                 catalog::Source::None => "info.offline",
                 _ => "info.offline_cached",
             };
-            lines.push((cx.t(key).to_owned(), theme::WARN, None));
+            lines.push(InfoLine::new(cx.t(key).to_owned(), theme::WARN));
         }
         if !self.disk.assets_ready && self.selected().is_some_and(|i| !i.is_java()) {
-            lines.push((cx.t("info.assets_missing").to_owned(), theme::WARN, None));
+            lines.push(InfoLine::new(cx.t("info.assets_missing").to_owned(), theme::WARN));
         }
         if self.rust_missing() {
-            lines.push((cx.t("info.rust_missing").to_owned(), theme::WARN, Some(Link::RustGuide)));
+            let line = InfoLine::new(cx.t("info.rust_missing").to_owned(), theme::WARN);
+            lines.push(line.link(Link::RustGuide));
         }
-        if lines.is_empty() {
-            let version = cx.tf("info.version", &[env!("CARGO_PKG_VERSION")]);
-            lines.push((version, theme::DIM, None));
-            if let Some(latest) = &latest {
-                lines.push((cx.tf("info.up_to_date", &[latest]), theme::FAINT, None));
-            }
-        }
-        let shown = lines.len().min(2);
-        let top = rect.y + (rect.h - shown as f32 * 11.0) / 2.0 + 1.0;
-        for (i, (text, color, link)) in lines.iter().take(2).enumerate() {
-            let y = top + i as f32 * 11.0;
-            let line = Rect::new(rect.x, y - 1.0, rect.w, 11.0);
-            let hot = link.is_some() && cx.hot(line);
-            if hot {
-                cx.pointer();
-            }
-            let color = if hot { theme::TEXT } else { *color };
-            if i == 0 && cx.text_width(text) <= rect.w {
-                cx.label(text, rect.x, y, rect.w, color);
-            } else {
-                cx.small_label(text, rect.x, y + 1.0, rect.w, color);
-            }
-            if let Some(link) = link
-                && cx.clicked(line)
-            {
-                match link {
-                    Link::Url(url) => melon_base::platform::open_url(url),
-                    Link::RustGuide => self.rust_guide = true,
-                }
-            }
-        }
+        lines
     }
 
     pub fn open_prompt(&mut self, cx: &Cx, purpose: Purpose, value: &str) {

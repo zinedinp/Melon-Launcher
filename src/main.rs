@@ -9,6 +9,7 @@ mod lang;
 mod launcher;
 mod mods;
 mod play;
+mod self_update;
 mod store;
 mod toolchain;
 mod ui;

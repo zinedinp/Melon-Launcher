@@ -128,6 +128,16 @@ pub fn game_url_for(cdn: &Cdn, version: &str) -> String {
     format!("{}/game/{version}/{}/", cdn.origin, platform_folder())
 }
 
+/// File name of the launcher on the CDN.
+pub fn launcher_bin() -> &'static str {
+    if cfg!(windows) { "melon-launcher.exe" } else { "melon-launcher" }
+}
+
+/// Directory of a launcher version: `…/cdn/launcher/<version>/<os-arch>/`.
+pub fn launcher_url_for(cdn: &Cdn, version: &str) -> String {
+    format!("{}/launcher/{version}/{}/", cdn.origin, platform_folder())
+}
+
 /// Where downloaded game clients live: `<melon folder>/versions/`.
 pub fn versions_dir(home: &Path) -> PathBuf {
     home.join("versions")
@@ -181,6 +191,41 @@ impl Progress {
     }
 }
 
+/// The SHA-256 `bin` in `folder` must have: `listed` from the signed catalog, else a `.sha256`
+/// file that carries its own signature.
+fn expected_sha(
+    cdn: &Cdn,
+    folder: &str,
+    bin: &str,
+    listed: Option<String>,
+    progress: &dyn Fn(Progress),
+) -> Result<String, String> {
+    if let Some(hash) = listed {
+        return Ok(hash);
+    }
+    let sha_url = format!("{folder}{bin}.sha256");
+    progress(Progress::line(format!("GET {sha_url}")));
+    let text = fetch_text(&sha_url)?;
+    let signature = fetch_text(&format!("{sha_url}.minisig"))?;
+    cdn.verify(text.as_bytes(), &signature)
+        .map_err(|e| format!("{sha_url}: {e}"))?;
+    parse_sha256_line(&text).ok_or_else(|| "sha256 file is not a hash".to_owned())
+}
+
+/// Fetches launcher `version` to `dest`, verified like a game client.
+pub fn fetch_launcher(version: &str, dest: &Path, progress: &dyn Fn(Progress)) -> Result<(), String> {
+    if !safe_version(version) {
+        return Err(format!("bad version {version}"));
+    }
+    let cdn = current();
+    let folder = launcher_url_for(&cdn, version);
+    let listed = crate::catalog::launcher_sha(version, platform_folder());
+    let expected = expected_sha(&cdn, &folder, launcher_bin(), listed, progress)?;
+    let bin_url = format!("{folder}{}", launcher_bin());
+    progress(Progress::line(format!("GET {bin_url}")));
+    download_verified(&bin_url, dest, &expected, progress)
+}
+
 /// Fetches the game client of `version` into `versions/<version>/` and verifies its SHA-256:
 /// the signed catalog's, else a `.sha256` file that carries its own signature.
 pub fn fetch_game(
@@ -194,18 +239,9 @@ pub fn fetch_game(
     let dest = game_path(home, version);
     let cdn = current();
     let folder = game_url_for(&cdn, version);
-    let sha_url = format!("{}{}.sha256", folder, game_bin());
     let bin_url = format!("{}{}", folder, game_bin());
-    let expected = if let Some(hash) = crate::catalog::game_sha(version, platform_folder()) {
-        hash
-    } else {
-        progress(Progress::line(format!("GET {sha_url}")));
-        let text = fetch_text(&sha_url)?;
-        let signature = fetch_text(&format!("{sha_url}.minisig"))?;
-        cdn.verify(text.as_bytes(), &signature)
-            .map_err(|e| format!("{sha_url}: {e}"))?;
-        parse_sha256_line(&text).ok_or("sha256 file is not a hash")?
-    };
+    let listed = crate::catalog::game_sha(version, platform_folder());
+    let expected = expected_sha(&cdn, &folder, game_bin(), listed, progress)?;
     if dest.is_file()
         && let Some(have) = sha256_file(&dest)
         && have == expected

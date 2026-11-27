@@ -6,6 +6,7 @@ use crate::cdn;
 use crate::java_play;
 use crate::lang::Strings;
 use crate::play::{self, Client, Facts, Install};
+use crate::self_update;
 use crate::store::instances::{self, Instance};
 use crate::store::settings::Settings;
 use crate::store::shared;
@@ -81,10 +82,11 @@ struct PrepareJob {
     thread: Option<JoinHandle<Result<(), String>>>,
 }
 
-/// Assets and/or a client being fetched.
+/// Assets and/or a client being fetched, or a launcher update.
 struct InstallJob {
     rx: Receiver<cdn::Progress>,
-    thread: Option<JoinHandle<Result<(), String>>>,
+    /// `Some` is a new launcher binary to restart into.
+    thread: Option<JoinHandle<Result<Option<PathBuf>, String>>>,
 }
 
 impl RunningState {
@@ -243,7 +245,7 @@ impl RunningState {
                     let _ = tx.send(progress);
                 })?;
             }
-            Ok(())
+            Ok(None)
         });
         self.show_progress("install");
         self.install_job = Some(InstallJob {
@@ -252,9 +254,28 @@ impl RunningState {
         });
     }
 
-    /// Drains the download's lines. `Some` when it ended; then what is on disk is looked at
-    /// again.
-    fn poll_install(&mut self) -> Option<()> {
+    /// Puts launcher `version` in place of this one's binary; the launcher then restarts.
+    fn start_update(&mut self, version: String) {
+        if self.prepare_job.is_some() || self.install_job.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let progress = |progress| {
+                let _ = tx.send(progress);
+            };
+            self_update::install(&version, &progress).map(Some)
+        });
+        self.show_progress("update");
+        self.install_job = Some(InstallJob {
+            rx,
+            thread: Some(thread),
+        });
+    }
+
+    /// Drains the download's lines. Once it ended, what is on disk is looked at again; a new
+    /// launcher binary to restart into is returned.
+    fn poll_install(&mut self) -> Option<PathBuf> {
         let job = self.install_job.as_mut()?;
         while let Ok(update) = job.rx.try_recv() {
             if let Some(progress) = &mut self.progress {
@@ -273,16 +294,21 @@ impl RunningState {
             .take()
             .and_then(|t| t.join().ok())
             .unwrap_or_else(|| Err("the download thread failed".into()));
+        self.shell.recheck();
         match result {
-            Ok(()) => self.progress = None,
+            Ok(restart) => {
+                if restart.is_none() {
+                    self.progress = None;
+                }
+                restart
+            }
             Err(error) => {
                 if let Some(progress) = &mut self.progress {
                     progress.fail(error);
                 }
+                None
             }
         }
-        self.shell.recheck();
-        Some(())
     }
 
     /// A game ended while the window was open.
@@ -772,6 +798,12 @@ impl App {
                     }
                 }
                 Action::Install(install, found) => state.start_install(install, found, &home),
+                // The game's output runs through this process: it may not end under it.
+                Action::UpdateLauncher(_) if self.game.is_some() => {
+                    let text = state.strings.get("update.game_running").to_owned();
+                    state.shell.notify(text);
+                }
+                Action::UpdateLauncher(version) => state.start_update(version),
                 Action::SignIn => state.login.start_login(),
                 Action::LanguageChanged => state.set_language(&home),
             }
@@ -853,7 +885,19 @@ impl ApplicationHandler for App {
             self.play(event_loop, request);
         }
         let Some(state) = &mut self.state else { return };
-        state.poll_install();
+        if let Some(launcher) = state.poll_install() {
+            match self_update::restart(&launcher) {
+                Ok(()) => {
+                    event_loop.exit();
+                    return;
+                }
+                Err(error) => {
+                    if let Some(progress) = &mut state.progress {
+                        progress.fail(error);
+                    }
+                }
+            }
+        }
         if Instant::now() >= state.next_frame {
             state.next_frame = Instant::now() + FRAME_TIME;
             state.window.request_redraw();
@@ -945,6 +989,7 @@ pub fn run(validation: bool) -> anyhow::Result<()> {
         eprintln!("Melon folder {}: {e}", home.display());
     }
     let client_id = auth::microsoft_client_id(&home);
+    self_update::clean_up();
 
     cdn::configure(cdn::Cdn::from_settings(&Settings::load(&home)));
     catalog::load(&home);

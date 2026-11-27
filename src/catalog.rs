@@ -94,14 +94,28 @@ pub fn game_versions() -> Vec<String> {
     versions
 }
 
-/// SHA-256 of the published game binary for `version` on this platform.
-pub fn game_sha(version: &str, platform: &str) -> Option<String> {
-    current()
-        .game
+/// SHA-256 of the binary of `version` on `platform` among `releases`.
+fn sha_in(releases: &[Release], version: &str, platform: &str) -> Option<String> {
+    releases
         .iter()
         .find(|r| r.version == version)
         .and_then(|r| r.platforms.get(platform))
         .and_then(|p| p.sha256.clone())
+}
+
+/// SHA-256 of the published game binary for `version` on this platform.
+pub fn game_sha(version: &str, platform: &str) -> Option<String> {
+    sha_in(&current().game, version, platform)
+}
+
+/// SHA-256 of the published launcher binary for `version` on this platform.
+pub fn launcher_sha(version: &str, platform: &str) -> Option<String> {
+    sha_in(&current().launcher, version, platform)
+}
+
+/// Latest published launcher version; `None` while no catalog is known.
+pub fn latest_launcher() -> Option<String> {
+    Some(current().latest.launcher).filter(|v| !v.is_empty())
 }
 
 /// A published launcher version newer than this build.
