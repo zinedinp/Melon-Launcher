@@ -435,6 +435,9 @@ fn spawn_game(
         if settings.probe {
             cmd.arg("--probe");
         }
+        if let Some(path) = crate::toolchain::game_path() {
+            cmd.env("PATH", path);
+        }
         cmd
     };
     let io = |e: std::io::Error| e.to_string();
@@ -684,6 +687,7 @@ impl App {
             shared::collect_options(home, &instance);
         }
         let crashed = status.filter(|s| !s.success() && !game.stopped);
+        instances::record_exit(home, &game.instance, crashed.map(exit_code));
         let finished = Finished {
             account_key: game.account_key.clone(),
             instance: game.instance.clone(),

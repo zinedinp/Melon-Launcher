@@ -99,6 +99,34 @@ pub fn wrap(text: &str, max_width: f32) -> Vec<String> {
     lines
 }
 
+/// `text` with its middle cut to `...`: the end keeps about 60 % of the room.
+pub fn ellipsize_middle(text: &str, max_width: f32) -> String {
+    if text_width(text) <= max_width {
+        return text.to_owned();
+    }
+    let dots = "...";
+    let room = max_width - text_width(dots);
+    if room <= 0.0 {
+        return dots.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let (mut head, mut tail) = (0, chars.len());
+    let mut tail_w = 0.0;
+    while tail > 0 && tail_w + advance(chars[tail - 1]) <= room * 0.6 {
+        tail -= 1;
+        tail_w += advance(chars[tail]);
+    }
+    let mut head_w = 0.0;
+    while head < tail && head_w + advance(chars[head]) + tail_w <= room {
+        head_w += advance(chars[head]);
+        head += 1;
+    }
+    let mut out: String = chars[..head].iter().collect();
+    out.push_str(dots);
+    out.extend(&chars[tail..]);
+    out
+}
+
 /// What a frame draws with.
 pub struct Painter<'a> {
     pub list: &'a mut DrawList,
@@ -199,6 +227,11 @@ impl<'a> Painter<'a> {
         out
     }
 
+    /// `text` with its middle cut to `...`, so both ends of a URL or path stay.
+    pub fn ellipsize_middle(&self, text: &str, max_width: f32) -> String {
+        ellipsize_middle(text, max_width)
+    }
+
     pub fn wrap(&self, text: &str, max_width: f32) -> Vec<String> {
         wrap(text, max_width)
     }
@@ -225,6 +258,16 @@ mod tests {
         let lines = wrap("abcdefgh", text_width("abc"));
         assert!(lines.len() >= 3 && lines.concat() == "abcdefgh");
         assert_eq!(wrap("a\nb", 100.0), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_long_url_keeps_both_ends() {
+        let url = "GET https://cdn.example.org/versions/0.10.4/windows-x86_64/melon.exe";
+        let cut = ellipsize_middle(url, 120.0);
+        assert!(text_width(&cut) <= 120.0, "{cut}");
+        assert!(cut.starts_with("GET ") && cut.contains("...") && cut.ends_with("melon.exe"), "{cut}");
+        assert_eq!(ellipsize_middle("short", 120.0), "short");
+        assert_eq!(ellipsize_middle(url, 4.0), "...");
     }
 
     #[test]

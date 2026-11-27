@@ -39,6 +39,61 @@ pub const LOCK: Icon = &[
     "#########",
 ];
 
+/// Instance badges, 7x7: running.
+pub const BADGE_RUNNING: Icon = &[
+    "#......",
+    "###....",
+    "#####..",
+    "#######",
+    "#####..",
+    "###....",
+    "#......",
+];
+
+/// Instance badge: the last game crashed.
+pub const BADGE_CRASHED: Icon = &[
+    "...#...",
+    "..###..",
+    "..###..",
+    "...#...",
+    "...#...",
+    ".......",
+    "...#...",
+];
+
+/// Instance badge: a newer client is published.
+pub const BADGE_UPDATE: Icon = &[
+    "...#...",
+    "..###..",
+    ".#.#.#.",
+    "...#...",
+    "...#...",
+    "...#...",
+    ".......",
+];
+
+/// Instance badge: the client or assets are not downloaded yet.
+pub const BADGE_DOWNLOAD: Icon = &[
+    "...#...",
+    "...#...",
+    ".#.#.#.",
+    "..###..",
+    "...#...",
+    ".......",
+    "#######",
+];
+
+/// Instance badge: it cannot start as it is.
+pub const BADGE_BLOCKED: Icon = &[
+    "..###..",
+    ".#...#.",
+    ".#...#.",
+    "#######",
+    "###.###",
+    "###.###",
+    "#######",
+];
+
 pub const DOWNLOAD: Icon = &[
     "....#....",
     "....#....",

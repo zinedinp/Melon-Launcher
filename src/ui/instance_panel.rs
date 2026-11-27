@@ -71,13 +71,8 @@ impl Shell {
             cx.icon_centered(icons::FOLDER, icon, theme::TEXT);
         }
         cx.tooltip(icon, cx.t("panel.change_icon"));
-        if cx.clicked(icon)
-            && let Some(png) = melon_base::platform::pick_file(cx.t("panel.change_icon"), "png")
-        {
-            let set = instances::set_icon(instance, &png);
-            if self.report(set).is_some() {
-                self.textures.forget(&icon_key(instance));
-            }
+        if cx.clicked(icon) {
+            self.change_icon(cx, instance);
         }
 
         let running = status.running == Some(instance.id.as_str());
@@ -133,6 +128,16 @@ impl Shell {
         }
     }
 
+    /// Asks for a PNG and makes it the instance's icon.
+    fn change_icon(&mut self, cx: &Cx, instance: &Instance) {
+        if let Some(png) = melon_base::platform::pick_file(cx.t("panel.change_icon"), "png") {
+            let set = instances::set_icon(instance, &png);
+            if self.report(set).is_some() {
+                self.textures.forget(&icon_key(instance));
+            }
+        }
+    }
+
     /// "Latest (0.9.7)", a pinned version, or the local binary.
     fn version_label(&self, cx: &Cx, instance: &Instance) -> String {
         match instance.version.as_deref() {
@@ -148,7 +153,7 @@ impl Shell {
     /// The narrow column: version or Java, folders, statistics, sharing, managing.
     fn side_column(&mut self, cx: &mut Cx, area: Rect, instance: &Instance, status: &Status) {
         let java_h = if instance.is_java() { 122.0 } else { 54.0 };
-        let content_h = java_h + 8.0 + (11.0 + 4.0 * ROW + 8.0) + (11.0 + 36.0 + 8.0) + (11.0 + 7.0 * ROW + 8.0) + (11.0 + 2.0 * ROW + 4.0);
+        let content_h = java_h + 8.0 + (11.0 + 4.0 * ROW + 8.0) + (11.0 + 36.0 + 8.0) + (11.0 + 7.0 * ROW + 8.0) + (11.0 + 3.0 * ROW + 4.0);
         let mut scroll = std::mem::take(&mut self.side_scroll);
         let mut y = scroll.begin(cx, area, content_h);
         let (x, w) = (area.x, area.w - 5.0);
@@ -221,6 +226,18 @@ impl Shell {
             self.reload();
         }
         cx.tooltip(delete, cx.t("manage.delete_tip"));
+        if cx.button(Rect::new(x, y + 2.0 * ROW, half, ROW - 2.0), cx.t("manage.icon"), Btn::NORMAL.small()) {
+            self.change_icon(cx, instance);
+        }
+        let has_icon = instance.icon_path().is_file();
+        let reset = Rect::new(x + half + 4.0, y + 2.0 * ROW, half, ROW - 2.0);
+        if cx.button(reset, cx.t("manage.icon_reset"), Btn::NORMAL.small().enabled(has_icon)) {
+            let cleared = instances::clear_icon(instance);
+            if self.report(cleared).is_some() {
+                self.textures.forget(&icon_key(instance));
+            }
+        }
+        cx.tooltip(reset, cx.t("manage.icon_reset_tip"));
 
         scroll.end(cx, area, content_h);
         self.side_scroll = scroll;

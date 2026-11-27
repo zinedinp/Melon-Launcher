@@ -8,6 +8,7 @@ use super::kit::{BUTTON_H, Btn, Cx, Rect, Scroll};
 use super::shell::Shell;
 use super::textures::{self, Textures};
 use crate::mods;
+use crate::toolchain::Rust;
 use std::path::{Path, PathBuf};
 
 const ROW_H: f32 = 34.0;
@@ -112,6 +113,15 @@ impl ContentList {
         }
     }
 
+    /// Switched-on mods shipped as source code, which the game builds with Rust.
+    pub fn source_mods(&self) -> usize {
+        self.mods
+            .iter()
+            .filter(|entry| entry.kinds.as_ref().is_some_and(|(code, _)| code == "source"))
+            .filter(|entry| entry.id.as_deref().is_some_and(|id| self.state.is_enabled(id)))
+            .count()
+    }
+
     fn toggle(&mut self, id: &str) -> Result<(), String> {
         let Some(game_dir) = &self.game_dir else {
             return Ok(());
@@ -136,6 +146,8 @@ fn row_icon(cx: &mut Cx, textures: &mut Textures, entry: &Entry, rect: Rect) {
 impl Shell {
     /// The content column: tabs, the folder button, and the rows.
     pub(super) fn content_column(&mut self, cx: &mut Cx, area: Rect) {
+        let rust_missing = self.rust_missing();
+        let no_toolchain = rust_missing && matches!(self.rust.get(), Some(Rust::NoToolchain));
         let mut list = std::mem::take(&mut self.content);
         let tab_w = 68.0;
         for (i, (tab, key)) in [(Tab::Mods, "content.mods"), (Tab::Plugins, "content.plugins")]
@@ -170,7 +182,22 @@ impl Shell {
         }
         cx.tooltip(reload, cx.t("content.reload"));
 
-        let rows = Rect::new(area.x, area.y + BUTTON_H + 4.0, area.w, area.h - BUTTON_H - 4.0);
+        let mut top_y = area.y + BUTTON_H + 4.0;
+        if rust_missing && list.tab == Tab::Mods {
+            let strip = Rect::new(area.x, top_y, area.w, 28.0);
+            cx.frame(strip, theme::alpha(theme::WARN, 0.08), theme::alpha(theme::WARN, 0.5));
+            let guide_w = 76.0;
+            let text_w = strip.w - guide_w - 14.0;
+            cx.small_label(cx.t("content.rust_needed"), strip.x + 6.0, strip.y + 6.0, text_w, theme::WARN);
+            let why = if no_toolchain { "content.rust_no_toolchain" } else { "content.rust_missing" };
+            cx.small_label(cx.t(why), strip.x + 6.0, strip.y + 16.0, text_w, theme::DIM);
+            let guide = Rect::new(strip.right() - guide_w - 5.0, strip.y + 5.0, guide_w, BUTTON_H);
+            if cx.button(guide, cx.t("content.rust_guide"), Btn::NORMAL.small()) {
+                self.rust_guide = true;
+            }
+            top_y = strip.bottom() + 4.0;
+        }
+        let rows = Rect::new(area.x, top_y, area.w, area.bottom() - top_y);
         cx.frame(rows, theme::FIELD, theme::EDGE);
         let inner = Rect::new(rows.x + 1.0, rows.y + 1.0, rows.w - 2.0, rows.h - 2.0);
         let is_mods = list.tab == Tab::Mods;

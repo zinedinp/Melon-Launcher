@@ -28,6 +28,8 @@ const FILE: &str = "instances.json";
 const EXTRAS_FILE: &str = "launcher_instances.json";
 const OWN: &str = "instances";
 const ICON: &str = "icon.png";
+/// The biggest side an instance icon is saved at.
+pub const ICON_SIDE: u32 = 128;
 const NOT_COPIED: &[&str] = &["logs", "crash-reports", ".cache", "natives"];
 /// Folders every instance has.
 const GAME_DIRS: [&str; 5] = ["mods", "plugins", "saves", "resourcepacks", "logs"];
@@ -73,6 +75,8 @@ pub struct Instance {
     pub shared: Shared,
     /// The shared folder its links and shared options come from.
     pub shared_folder: String,
+    /// The exit code of its last game, when that crashed.
+    pub crashed: Option<String>,
 }
 
 impl Instance {
@@ -175,6 +179,8 @@ struct Extra {
     /// None: [`shared::GLOBAL`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     shared_folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    crashed: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -358,6 +364,7 @@ fn from_meta(id: &str, path: &Path, store: &Store, extras: &Extras) -> Instance 
         memory_mb: extra.memory_mb,
         shared: extra.shared,
         shared_folder: extra.shared_folder.unwrap_or_else(|| shared::GLOBAL.to_owned()),
+        crashed: extra.crashed,
     }
 }
 
@@ -427,6 +434,7 @@ fn create_from(main: &Path, name: &str, from: Option<&Instance>) -> std::io::Res
                 memory_mb: from.memory_mb,
                 shared: from.shared,
                 shared_folder: (from.shared_folder != shared::GLOBAL).then(|| from.shared_folder.clone()),
+                crashed: None,
             },
         );
         for kind in Kind::ALL {
@@ -594,9 +602,41 @@ pub fn relink_all(main: &Path) {
     }
 }
 
-/// Copies a PNG in as the instance's icon.
-pub fn set_icon(instance: &Instance, png: &Path) -> std::io::Result<()> {
-    std::fs::copy(png, instance.icon_path()).map(|_| ())
+/// Makes an image the instance's icon: its middle square, at most [`ICON_SIDE`] wide, as PNG.
+pub fn set_icon(instance: &Instance, image: &Path) -> std::io::Result<()> {
+    let bad = |e: image::ImageError| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string());
+    let image = image::open(image).map_err(bad)?;
+    let side = image.width().min(image.height());
+    if side == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the image is empty"));
+    }
+    let square = image.crop_imm((image.width() - side) / 2, (image.height() - side) / 2, side, side);
+    let square = if side > ICON_SIDE {
+        square.resize_exact(ICON_SIDE, ICON_SIDE, image::imageops::FilterType::Triangle)
+    } else {
+        square
+    };
+    let part = instance.path.join("icon.png.part");
+    square
+        .to_rgba8()
+        .save_with_format(&part, image::ImageFormat::Png)
+        .map_err(bad)?;
+    std::fs::rename(&part, instance.icon_path())
+}
+
+/// Removes the instance's icon, so its initial stands in again.
+pub fn clear_icon(instance: &Instance) -> std::io::Result<()> {
+    match std::fs::remove_file(instance.icon_path()) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        done => done,
+    }
+}
+
+/// How the instance's last game ended: the exit code when it crashed.
+pub fn record_exit(main: &Path, id: &str, crashed: Option<String>) {
+    if let Err(e) = edit_extra(main, id, |extra| extra.crashed = crashed) {
+        eprintln!("{EXTRAS_FILE}: exit of {id} not saved: {e}");
+    }
 }
 
 /// Deletes an instance with everything in it; its shared folder stays.
@@ -686,6 +726,44 @@ mod tests {
         init(&main);
         let ids: Vec<_> = list(&main).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, ["old", "vanilla"]);
+        let _ = std::fs::remove_dir_all(main);
+    }
+
+    #[test]
+    fn an_icon_is_cut_square_and_shrunk_and_can_be_reset() {
+        let main = scratch("icon");
+        init(&main);
+        let a = create(&main, "Pictured", Engine::Melon).unwrap();
+        let wide = main.join("wide.png");
+        image::RgbaImage::from_fn(400, 200, |x, _| image::Rgba([(x / 2) as u8, 0, 0, 255]))
+            .save(&wide)
+            .unwrap();
+        set_icon(&a, &wide).unwrap();
+        let icon = image::open(a.icon_path()).unwrap();
+        assert_eq!((icon.width(), icon.height()), (ICON_SIDE, ICON_SIDE));
+        assert!(!a.path.join("icon.png.part").exists());
+
+        let fake = main.join("fake.png");
+        std::fs::write(&fake, b"not a picture").unwrap();
+        assert!(set_icon(&a, &fake).is_err());
+        assert!(image::open(a.icon_path()).is_ok(), "a bad file leaves the old icon");
+
+        clear_icon(&a).unwrap();
+        assert!(!a.icon_path().exists());
+        clear_icon(&a).unwrap();
+        let _ = std::fs::remove_dir_all(main);
+    }
+
+    #[test]
+    fn a_crash_is_remembered_until_a_clean_exit() {
+        let main = scratch("crashed");
+        init(&main);
+        let a = create(&main, "Shaky", Engine::Melon).unwrap();
+        record_exit(&main, &a.id, Some("0xC0000005".into()));
+        assert_eq!(find(&main, &a.id).unwrap().crashed.as_deref(), Some("0xC0000005"));
+        assert_eq!(copy(&main, &a.id, "Shaky Copy").unwrap().crashed, None);
+        record_exit(&main, &a.id, None);
+        assert_eq!(find(&main, &a.id).unwrap().crashed, None);
         let _ = std::fs::remove_dir_all(main);
     }
 

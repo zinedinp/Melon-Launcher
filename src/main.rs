@@ -10,6 +10,7 @@ mod launcher;
 mod mods;
 mod play;
 mod store;
+mod toolchain;
 mod ui;
 
 fn main() -> anyhow::Result<()> {

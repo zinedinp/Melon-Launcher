@@ -261,6 +261,13 @@ impl<'a, 'u> Cx<'a, 'u> {
         self.small(&text, x, y, color);
     }
 
+    /// Small text with its middle cut to fit, for URLs and paths. True when it was cut.
+    pub fn small_path(&mut self, text: &str, x: f32, y: f32, width: f32, color: Color) -> bool {
+        let fitted = self.ui.ellipsize_middle(text, (width / SMALL).max(8.0));
+        self.small(&fitted, x, y, color);
+        fitted != text
+    }
+
     /// Text wrapped to the width. Returns the height used.
     pub fn paragraph(&mut self, text: &str, x: f32, y: f32, width: f32, color: Color) -> f32 {
         let lines = self.ui.wrap(text, width / SMALL);

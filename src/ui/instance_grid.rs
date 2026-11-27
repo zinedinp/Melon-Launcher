@@ -5,7 +5,7 @@ use super::kit::theme;
 use super::kit::{Btn, Cx, SMALL};
 use super::shell::{Action, Purpose, Shell, Status};
 use super::textures;
-use crate::play::PlayState;
+use crate::play::{Blocked, PlayState};
 use crate::store::instances::Instance;
 use super::kit::Rect;
 
@@ -14,6 +14,16 @@ const TILE_H: f32 = 56.0;
 const ICON: f32 = 28.0;
 const GROUP_H: f32 = 16.0;
 const HEADER_H: f32 = 22.0;
+
+/// What a tile's corner says, most pressing first.
+enum Badge {
+    Running,
+    /// The exit code of the last game.
+    Crashed(String),
+    Update,
+    Download,
+    Blocked(Blocked),
+}
 
 /// The texture key of an instance's icon.
 pub fn icon_key(instance: &Instance) -> String {
@@ -125,6 +135,21 @@ impl Shell {
         self.grid_scroll = scroll;
     }
 
+    fn badge(&self, instance: &Instance, status: &Status) -> Option<Badge> {
+        if status.running == Some(instance.id.as_str()) {
+            return Some(Badge::Running);
+        }
+        if let Some(code) = &instance.crashed {
+            return Some(Badge::Crashed(code.clone()));
+        }
+        match self.disk.states.get(&instance.id)? {
+            PlayState::Update => Some(Badge::Update),
+            PlayState::Download => Some(Badge::Download),
+            PlayState::Locked(why) => Some(Badge::Blocked(*why)),
+            PlayState::Start => None,
+        }
+    }
+
     fn tile(
         &mut self,
         cx: &mut Cx,
@@ -146,16 +171,15 @@ impl Shell {
         }
         let icon = Rect::new(tile.x + ((tile.w - ICON) / 2.0).floor(), tile.y + 6.0, ICON, ICON);
         self.instance_icon(cx, instance, icon);
-        if status.running == Some(instance.id.as_str()) {
-            cx.fill(Rect::new(icon.right() - 4.0, icon.y - 2.0, 6.0, 6.0), theme::BG);
-            cx.fill(Rect::new(icon.right() - 3.0, icon.y - 1.0, 4.0, 4.0), theme::ACCENT);
-        }
         let name = cx.fit(&instance.name, (tile.w - 4.0) / SMALL);
         let w = cx.text_width(&name) * SMALL;
         let color = if selected || hot { theme::TEXT } else { theme::DIM };
         cx.small(&name, tile.x + (tile.w - w) / 2.0, icon.bottom() + 6.0, color);
         if name != instance.name {
             cx.tooltip(tile, &instance.name);
+        }
+        if let Some(badge) = self.badge(instance, status) {
+            draw_badge(cx, tile, &badge);
         }
         if cx.clicked(tile) {
             let again = selected && cx.input.double_click;
@@ -165,4 +189,26 @@ impl Shell {
             }
         }
     }
+}
+
+/// A badge's icon on a small plate in the tile's top right, and what it means on hover.
+fn draw_badge(cx: &mut Cx, tile: Rect, badge: &Badge) {
+    let (icon, color) = match badge {
+        Badge::Running => (icons::BADGE_RUNNING, theme::ACCENT),
+        Badge::Crashed(_) => (icons::BADGE_CRASHED, theme::DANGER),
+        Badge::Update => (icons::BADGE_UPDATE, theme::ACCENT),
+        Badge::Download => (icons::BADGE_DOWNLOAD, theme::DIM),
+        Badge::Blocked(_) => (icons::BADGE_BLOCKED, theme::WARN),
+    };
+    let plate = Rect::new(tile.right() - 13.0, tile.y + 2.0, 11.0, 11.0);
+    cx.frame(plate, theme::BG, theme::alpha(color, 0.55));
+    cx.icon(icon, plate.x + 2.0, plate.y + 2.0, color);
+    let text = match badge {
+        Badge::Running => cx.t("badge.running").to_owned(),
+        Badge::Crashed(code) => cx.tf("badge.crashed", &[code]),
+        Badge::Update => cx.tf("badge.update", &[&crate::catalog::latest_game().unwrap_or_default()]),
+        Badge::Download => cx.t("badge.download").to_owned(),
+        Badge::Blocked(why) => cx.t(why.key()).to_owned(),
+    };
+    cx.tooltip(plate, &text);
 }

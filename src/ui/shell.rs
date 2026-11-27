@@ -8,6 +8,7 @@ use super::kit::theme;
 use super::kit::{self, BUTTON_H, Btn, Cx, GAP, Scroll};
 use super::login::Outcome;
 use super::provider_login::{self, ProviderDialog};
+use super::rust_guide::RustCheck;
 use super::settings_menu::SettingsMenu;
 use super::textures::Textures;
 use super::welcome::Welcome;
@@ -120,6 +121,8 @@ pub struct Disk {
     pub last_server: Option<String>,
     /// The shared folders, `global` first.
     pub shared: Vec<String>,
+    /// What Play would be for each Melon instance, for the tiles' badges.
+    pub states: HashMap<String, PlayState>,
 }
 
 pub struct Shell {
@@ -147,6 +150,17 @@ pub struct Shell {
     pub welcome: Option<Welcome>,
     /// Signing in with a service other than Microsoft.
     pub provider_dialog: Option<ProviderDialog>,
+    /// The Rust toolchain source-code mods are built with.
+    pub rust: RustCheck,
+    /// The Rust install guide is open.
+    pub rust_guide: bool,
+}
+
+/// What a line in the quick bar opens when clicked.
+#[derive(Clone, Copy)]
+enum Link {
+    Url(&'static str),
+    RustGuide,
 }
 
 impl Shell {
@@ -181,6 +195,8 @@ impl Shell {
             javas: None,
             welcome,
             provider_dialog: None,
+            rust: RustCheck::default(),
+            rust_guide: false,
         };
         shell.reload();
         shell
@@ -233,7 +249,31 @@ impl Shell {
             java_runtime: java.is_some_and(|i| java::resolve(&self.settings, i).is_some()),
             last_server: selected.as_ref().and_then(|i| instances::last_server(&i.path)),
             shared: shared::list(&self.home),
+            states: HashMap::new(),
         };
+        let latest = catalog::latest_game();
+        let disk = &self.disk;
+        let states = self
+            .instances
+            .iter()
+            .filter(|instance| !instance.is_java())
+            .map(|instance| {
+                let facts = Facts {
+                    instance: Some(instance),
+                    busy: false,
+                    running: false,
+                    account_locked: false,
+                    assets_ready: disk.assets_ready,
+                    latest: latest.as_deref(),
+                    installed: &disk.installed,
+                    local_binary: disk.local_binary,
+                    java_jar: false,
+                    java_runtime: false,
+                };
+                (instance.id.clone(), play::play_state(&facts))
+            })
+            .collect();
+        self.disk.states = states;
     }
 
     pub fn javas(&mut self) -> &[java::Runtime] {
@@ -399,6 +439,8 @@ impl Shell {
             self.provider_dialog = None;
         } else if self.prompt.is_some() {
             self.prompt = None;
+        } else if self.rust_guide {
+            self.rust_guide = false;
         } else {
             self.page = Page::Main;
         }
@@ -415,6 +457,7 @@ impl Shell {
         // not its own.
         let (page_was_open, prompt_was_open) = (self.page != Page::Main, self.prompt.is_some());
         let dialog_was_open = self.provider_dialog.is_some();
+        let guide_was_open = self.rust_guide;
         let all = Rect::new(0.0, 0.0, cx.width(), cx.height());
         cx.fill(all, theme::BG);
 
@@ -430,7 +473,11 @@ impl Shell {
             return out;
         }
 
-        cx.active = free && self.page == Page::Main && self.prompt.is_none() && self.provider_dialog.is_none();
+        cx.active = free
+            && self.page == Page::Main
+            && self.prompt.is_none()
+            && self.provider_dialog.is_none()
+            && !self.rust_guide;
         self.topbar(cx, status, &mut out);
         let body_y = TOPBAR_H + PAD;
         let body_h = (cx.height() - body_y - PAD).max(40.0);
@@ -455,6 +502,11 @@ impl Shell {
                 Page::Settings => self.settings_page(cx, sheet, status, &mut out),
                 Page::Main => {}
             }
+        }
+        if self.rust_guide {
+            cx.active = free && guide_was_open && self.prompt.is_none();
+            cx.shade();
+            self.rust_guide_dialog(cx);
         }
         if self.prompt.is_some() {
             cx.active = free && prompt_was_open;
@@ -597,7 +649,7 @@ impl Shell {
 
     /// The quick bar's left: what is new or wrong, most important first.
     fn info(&mut self, cx: &mut Cx, rect: Rect, status: &Status) {
-        let mut lines: Vec<(String, theme::Color, Option<&'static str>)> = Vec::new();
+        let mut lines: Vec<(String, theme::Color, Option<Link>)> = Vec::new();
         if let Some((text, at)) = &self.notice {
             if at.elapsed() < NOTICE {
                 lines.push((text.clone(), theme::WARN, None));
@@ -610,7 +662,7 @@ impl Shell {
             lines.push((cx.tf("info.running", &[name]), theme::ACCENT, None));
         }
         if let Some(version) = catalog::launcher_update() {
-            lines.push((cx.tf("info.launcher_update", &[&version]), theme::ACCENT, Some(RELEASES_URL)));
+            lines.push((cx.tf("info.launcher_update", &[&version]), theme::ACCENT, Some(Link::Url(RELEASES_URL))));
         }
         let latest = catalog::latest_game();
         if let Some(latest) = &latest
@@ -628,6 +680,9 @@ impl Shell {
         }
         if !self.disk.assets_ready && self.selected().is_some_and(|i| !i.is_java()) {
             lines.push((cx.t("info.assets_missing").to_owned(), theme::WARN, None));
+        }
+        if self.rust_missing() {
+            lines.push((cx.t("info.rust_missing").to_owned(), theme::WARN, Some(Link::RustGuide)));
         }
         if lines.is_empty() {
             let version = cx.tf("info.version", &[env!("CARGO_PKG_VERSION")]);
@@ -651,10 +706,13 @@ impl Shell {
             } else {
                 cx.small_label(text, rect.x, y + 1.0, rect.w, color);
             }
-            if let Some(url) = link
+            if let Some(link) = link
                 && cx.clicked(line)
             {
-                melon_base::platform::open_url(url);
+                match link {
+                    Link::Url(url) => melon_base::platform::open_url(url),
+                    Link::RustGuide => self.rust_guide = true,
+                }
             }
         }
     }

@@ -10,6 +10,7 @@ pub mod kit;
 pub mod login;
 pub mod overlay;
 mod provider_login;
+mod rust_guide;
 mod settings_menu;
 pub mod shell;
 mod textures;
